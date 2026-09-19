@@ -1,0 +1,23 @@
+# The build context is sent to the Docker daemon in full before anything runs.
+# .venv is host-platform wheels the image must never use - it rebuilds dependencies from
+# uv.lock inside the image instead.
+.venv/
+venv/
+env/
+
+.git/
+.github/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Secrets must never land in an image layer.
+.env
+.env.*
+!.env.example
+
+tests/
+diag-out/
+Dockerfile
+docker-compose.yml

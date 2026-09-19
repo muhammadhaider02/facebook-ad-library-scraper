@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editors / AI assistants
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local secrets, run logs, scraped output
+.env
+.env.*
+!.env.example
+*.log
+output/
+
+# Raw page dumps from `facebook-ad-library diag --save-dir`. Trimmed copies live in tests/fixtures/.
+diag-out/

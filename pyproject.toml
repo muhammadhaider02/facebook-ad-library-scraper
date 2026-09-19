@@ -1,0 +1,33 @@
+[project]
+name = "facebook-ad-library"
+version = "0.1.0"
+description = "Self-hosted Meta Ad Library scraper: a drop-in HTTP replacement for the Apify actor used by the Stage 0 brand-sourcing workflow"
+readme = "README.md"
+authors = [
+    { name = "Haider", email = "haider@ecombench.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "curl-cffi>=0.16",
+    "fastapi>=0.115",
+    "python-dotenv>=1.2.3",
+    "uvicorn[standard]>=0.30",
+]
+
+[project.scripts]
+facebook-ad-library = "facebook_ad_library:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.27",
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: hits facebook.com for real (deselect with -m 'not live')"]
+addopts = "-m 'not live'"
