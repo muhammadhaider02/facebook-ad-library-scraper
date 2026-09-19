@@ -91,6 +91,8 @@ n8n reaches the service by container name over the shared network:
 http://facebook-ad-library:8002/facebook
 ```
 
+**Run `diag` from the VPS before trusting it.** The handshake and every token were measured from a residential IP. The first CI run (2026-09-19, a GitHub datacenter runner) told a different story: the bootstrap and the challenge went through and a session minted, but the very first GraphQL call was answered with error `1675004` (rate limited) and so was the retry, on a fresh session too. Meta throttles datacenter addresses on this endpoint from call one. If the VPS IP behaves the same, set `SCRAPER_PROXY` to a residential sticky port and re-run `diag`; that path is the fallback facebook.md §5.5 describes and costs about $13 a month at Stage 0's volume.
+
 Nothing is published to the host and nothing is reachable from the internet, so there is no domain, no TLS certificate and no reverse proxy to maintain. The n8n HTTP node uses a Header Auth credential carrying `Authorization: Bearer <API_TOKEN>`, the same pattern as `trustpilot-scraper` and `reddit-scraper`.
 
 The network is declared external in `docker-compose.yml` as `n8n_default`, the default Compose creates for n8n's project. If that name differs the container refuses to start and says so; `docker network ls` gives the real one.
