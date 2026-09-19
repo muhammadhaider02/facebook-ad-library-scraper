@@ -1,10 +1,10 @@
 """One fake browser session against the Ad Library, and the pool that hands them out.
 
 Modelled on reddit-reviews' mobile.py (Device / _DevicePool). The unit of identity is a session,
-not a request: one curl_cffi cookie jar (`datr`, `rd_challenge`), one `lsd` token, one
-`sessionID`, one `__req` counter, all minted together and never mixed. A session is used for many
-searches and retired at a request count, an age, or the first hard failure; a retired session is
-never handed out again.
+not a request: one curl_cffi cookie jar (`datr`, `rd_challenge`), created empty and filled by
+the first GET, which is the one Meta challenges. A session is used for many searches and retired
+at a request count, an age, the first hard failure, or a run of pages without results; a
+retired session is never handed out again.
 
 The transport is a tiny protocol so the whole lifecycle runs offline in tests against scripted
 responses. The real one wraps curl_cffi with Chrome TLS impersonation, which is load-bearing:
@@ -37,9 +37,9 @@ counters = {
     "challenges": 0,
     "calls": 0,
     "bytes": 0,
+    "misses": 0,
     "rate_limited": 0,
     "session_dead": 0,
-    "docid_stale": 0,
     "blocked": 0,
     "transient": 0,
 }
@@ -137,9 +137,10 @@ class RateLimiter:
 
 
 class FbSession:
-    """One fake browser: cookie jar + tokens + doc_id + counters, minted once and paced."""
+    """One fake browser: a cookie jar and its counters, paced. Nothing is fetched until the
+    first search; that GET clears the challenge and fills the jar."""
 
-    BOOTSTRAP_HEADERS = {
+    PAGE_HEADERS = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Upgrade-Insecure-Requests": "1",
     }
@@ -156,28 +157,20 @@ class FbSession:
         self._clock = clock
         self._sleep = sleep
         self.label = "fb-" + uuid.uuid4().hex[:6]
-        self.session_id = str(uuid.uuid4())
-        self.tokens: wire.Tokens | None = None
-        self.doc_id = ""
-        self.doc_id_source = "none"
-        self.referer = ""
-        self.req_n = 0
         self.requests_made = 0
+        self.challenges = 0
         self.born = clock()
         self.last_call = 0.0
         self.retired = False
         self.retire_reason = ""
-        self.empty_streak = 0
-        # What mint() saw, step by step, for the diag command and for log lines on failure.
+        self.miss_streak = 0
+        # What the last fetch() saw, step by step, for the diag command and for log lines.
         self.trace: list[str] = []
-        # The last GraphQL response body, raw. The diag command saves it as a fixture source.
+        # The last page body, raw. The diag command saves it as a fixture source.
         self.last_text = ""
+        _bump("sessions_minted")
 
     # ----------------------------------------------------------------- lifecycle
-
-    @property
-    def minted(self) -> bool:
-        return self.tokens is not None and bool(self.doc_id)
 
     @property
     def expired(self) -> bool:
@@ -193,145 +186,94 @@ class FbSession:
             _bump_reason(reason)
             log.info("%s retired (%s) after %d call(s)", self.label, reason, self.requests_made)
 
-    def mint(self, query: str, country: str, active_status: str = "active") -> None:
-        """GET the search page; clear the challenge if there is one; read the tokens and the doc_id."""
+    def _pace(self) -> None:
+        """A human-looking gap between two requests on the same session."""
+        if not self.last_call:
+            return
+        gap = random.uniform(settings.spacing_min_s, settings.spacing_max_s)
+        wait = self.last_call + gap - self._clock()
+        if wait > 0:
+            self._sleep(wait)
+
+    # ----------------------------------------------------------------- one search
+
+    def fetch(self, query: str, country: str, active_status: str = "active") -> tuple[wire.Page, list[dict]]:
+        """GET the search page and read its embedded results. Clears the challenge when Meta
+        raises one. Raises the typed error for anything that is not an Ad Library page."""
+        if self.retired:
+            raise wire.SessionDead(f"{self.label} is retired ({self.retire_reason})")
         url = wire.bootstrap_url(query, country, active_status)
-        self.referer = url
-        try:
-            r = self.transport.get(url, headers=self.BOOTSTRAP_HEADERS)
-            self.trace.append(f"GET {r.status} {len(r.text)}B rd={r.headers.get('X-FB-Rd') or r.headers.get('x-fb-rd') or '-'}")
-            if r.status == 403 and wire.CHALLENGE_MARKER in r.text:
-                challenge = wire.challenge_url(r.text)
-                if not challenge:
-                    raise wire.ScrapeBlocked("challenge page had no parseable __rd_verify URL")
-                _bump("challenges")
-                p = self.transport.post(challenge, headers={"Referer": url, "Origin": wire.ORIGIN})
-                self.trace.append(f"POST challenge {p.status} cookies={','.join(self.transport.cookie_names()) or '-'}")
-                r = self.transport.get(url, headers=self.BOOTSTRAP_HEADERS)
-                self.trace.append(f"GET {r.status} {len(r.text)}B cookies={','.join(self.transport.cookie_names()) or '-'}")
-        except wire.FacebookError:
-            raise
-        except Exception as e:  # noqa: BLE001 - anything from the HTTP stack is a vendor failure
-            _bump("transient")
-            raise wire.ScrapeFailed(f"bootstrap failed: {type(e).__name__}: {e}"[:300]) from e
+        self.trace = []
+        delays = (1.0, 3.0)
+        for attempt in range(len(delays) + 1):
+            self._pace()
+            self.limiter.wait()
+            try:
+                r = self._get_page(url)
+            except wire.FacebookError:
+                raise
+            except Exception as e:  # noqa: BLE001 - anything from the HTTP stack is a vendor failure
+                r = Resp(0, f"{type(e).__name__}: {e}")
+                self.trace.append(f"GET failed: {r.text[:80]}")
+            self.last_call = self._clock()
+            self.last_text = r.text or ""
+            self.requests_made += 1
+            _bump("calls")
+            _bump("bytes", len(r.text or ""))
+            if r.status == 0 or r.status >= 500:
+                _bump("transient")
+                if attempt < len(delays):
+                    log.warning("%s: transient failure (http %s), retrying in %.0fs", self.label, r.status or "-", delays[attempt])
+                    self._sleep(delays[attempt])
+                    continue
+                raise wire.ScrapeFailed(f"page GET failed after {attempt + 1} attempts: http {r.status or '-'} {r.text[:120]!r}")
+            break
 
         if r.status == 400:
             _bump("blocked")
             raise wire.ScrapeBlocked(
-                "bootstrap answered HTTP 400 error page after the challenge: the TLS fingerprint was "
-                f"rejected (is FB_IMPERSONATE={settings.impersonate!r} a current Chrome?)"
+                "the page answered HTTP 400 error page: the TLS fingerprint was rejected "
+                f"(is FB_IMPERSONATE={settings.impersonate!r} a current Chrome?)"
             )
-        if r.status != 200:
+        if r.status == 403:
             _bump("blocked")
-            raise wire.ScrapeBlocked(f"bootstrap answered HTTP {r.status}, title={wire._title_of(r.text)!r}")
-        try:
-            self.tokens = wire.extract_tokens(r.text)
-        except wire.ScrapeBlocked:
-            _bump("blocked")
-            raise
-        self.trace.append("tokens " + ", ".join(k for k, v in vars(self.tokens).items() if v))
-
-        if settings.doc_id:
-            self.doc_id, self.doc_id_source = settings.doc_id, "env"
-        else:
-            self.doc_id = self._discover_doc_id(r.text)
-            self.doc_id_source = "discovered"
-        self.trace.append(f"doc_id {self.doc_id} ({self.doc_id_source})")
-        _bump("sessions_minted")
-        log.info("%s minted for %s/%s: %s", self.label, query, country, "; ".join(self.trace))
-
-    def _discover_doc_id(self, html: str) -> str:
-        urls = wire.bundle_urls(html)
-
-        def texts():
-            for u in urls:
-                try:
-                    yield self.transport.get(u).text
-                except Exception as e:  # noqa: BLE001 - one bad bundle must not sink the mint
-                    log.warning("%s: bundle fetch failed: %s", self.label, e)
-
-        doc_id = wire.discover_doc_id(texts())
-        if not doc_id:
-            _bump("docid_stale")
-            raise wire.DocIdStale(
-                f"no AdLibrarySearchPaginationQuery doc_id in {len(urls)} bundle(s); set FB_DOC_ID from DevTools"
-            )
-        return doc_id
-
-    # ----------------------------------------------------------------- one call
-
-    def _pace(self) -> None:
-        gap = random.uniform(settings.spacing_min_s, max(settings.spacing_min_s, settings.spacing_max_s))
-        wait = self.last_call + gap - self._clock()
-        if wait > 0:
-            self._sleep(wait)
-        self.limiter.wait()
-
-    def search_page(
-        self,
-        query: str,
-        country: str,
-        cursor: str | None,
-        collation_token: str,
-        first: int,
-        active_status: str = "ACTIVE",
-    ) -> tuple[list[dict], str | None]:
-        """One GraphQL page. Raises the typed error for anything that is not a page of ads."""
-        if self.retired:
-            raise wire.SessionDead(f"{self.label} is retired ({self.retire_reason})")
-        assert self.tokens is not None and self.doc_id, "search_page before mint"
-        self.req_n += 1
-        variables = wire.build_variables(
-            query=query, country=country, cursor=cursor, collation_token=collation_token,
-            session_id=self.session_id, first=first, active_status=active_status, extra=wire.variables_extra(),
-        )
-        form = wire.build_form(self.tokens, self.doc_id, variables, self.req_n)
-        headers = wire.graphql_headers(self.tokens, self.referer)
-
-        delays = (1.0, 3.0)
-        for attempt in range(len(delays) + 1):
-            self._pace()
-            try:
-                r = self.transport.post(wire.GRAPHQL, data=form, headers=headers)
-            except Exception as e:  # noqa: BLE001
-                kind, body, status, text = wire.Kind.TRANSIENT, None, 0, f"{type(e).__name__}: {e}"
-            else:
-                status, text = r.status, r.text
-                kind, body = wire.classify(status, text)
-            self.last_call = self._clock()
-            self.last_text = text or ""
-            self.requests_made += 1
-            _bump("calls")
-            _bump("bytes", len(text or ""))
-
-            if kind is wire.Kind.TRANSIENT:
-                _bump("transient")
-                if attempt < len(delays):
-                    log.warning("%s: transient failure (http %s), retrying in %.0fs", self.label, status or "-", delays[attempt])
-                    self._sleep(delays[attempt])
-                    continue
-                raise wire.ScrapeFailed(f"graphql failed after {attempt + 1} attempts: http {status or '-'} {text[:120]!r}")
-            break
-
-        if kind is wire.Kind.RATE_LIMITED:
+            raise wire.ScrapeBlocked(f"the page answered HTTP 403 without a challenge, title={wire._title_of(r.text)!r}")
+        if r.status == 429:
             _bump("rate_limited")
-            raise wire.RateLimited(f"rate limited after {self.requests_made} call(s) on {self.label}: {wire.error_summary(body)}")
-        if kind is wire.Kind.HTML or kind is wire.Kind.BAD_JSON:
+            raise wire.RateLimited(f"http 429 after {self.requests_made} call(s) on {self.label}")
+        if r.status != 200:
             _bump("session_dead")
-            raise wire.SessionDead(
-                f"graphql answered http {status} with {'an HTML' if kind is wire.Kind.HTML else 'an unparseable'} body "
-                f"(title={wire._title_of(text)!r}) on {self.label}"
-            )
-        if kind is wire.Kind.DATA_NULL:
-            _bump("docid_stale")
-            raise wire.DocIdStale(f"graphql returned no data on {self.label}: {wire.error_summary(body) or 'no error given'}")
+            raise wire.SessionDead(f"the page answered HTTP {r.status}, title={wire._title_of(r.text)!r} on {self.label}")
+        if not wire.is_app_page(r.text):
+            _bump("session_dead")
+            raise wire.SessionDead(f"a 200 that is not the Ad Library page, title={wire._title_of(r.text)!r} on {self.label}")
 
-        ads, next_cursor = wire.extract_ads(body)
-        if cursor is None:
-            self.empty_streak = self.empty_streak + 1 if not ads else 0
-            if self.empty_streak >= settings.empty_streak_retire:
-                self.retire("empty_streak")
-        return ads, next_cursor
+        page, ads = wire.classify_page(r.text)
+        self.trace.append(f"page={page.value} ads={len(ads)}")
+        if page is wire.Page.MISS:
+            _bump("misses")
+            self.miss_streak += 1
+            if self.miss_streak >= settings.miss_streak_retire:
+                self.retire("miss_streak")
+        else:
+            self.miss_streak = 0
+        return page, ads
+
+    def _get_page(self, url: str) -> Resp:
+        r = self.transport.get(url, headers=self.PAGE_HEADERS)
+        self.trace.append(f"GET {r.status} {len(r.text)}B rd={r.headers.get('X-FB-Rd') or r.headers.get('x-fb-rd') or '-'}")
+        if r.status == 403 and wire.CHALLENGE_MARKER in r.text:
+            challenge = wire.challenge_url(r.text)
+            if not challenge:
+                _bump("blocked")
+                raise wire.ScrapeBlocked("challenge page had no parseable __rd_verify URL")
+            _bump("challenges")
+            self.challenges += 1
+            p = self.transport.post(challenge, headers={"Referer": url, "Origin": wire.ORIGIN})
+            self.trace.append(f"POST challenge {p.status} cookies={','.join(self.transport.cookie_names()) or '-'}")
+            r = self.transport.get(url, headers=self.PAGE_HEADERS)
+            self.trace.append(f"GET {r.status} {len(r.text)}B cookies={','.join(self.transport.cookie_names()) or '-'}")
+        return r
 
 
 # --------------------------------------------------------------------------- pool
@@ -345,15 +287,15 @@ class _Lease:
         self.session = session
         self.swaps = 0
 
-    def replace(self, query: str, country: str) -> FbSession:
+    def replace(self) -> FbSession:
         self._pool._drop(self.session)
-        self.session = self._pool._new(query, country)
+        self.session = self._pool._new()
         self.swaps += 1
         return self.session
 
 
 class _SessionPool:
-    """Round-robin over a few warm sessions; mints lazily; drops retired and expired ones."""
+    """Round-robin over a few warm sessions; creates lazily; drops retired and expired ones."""
 
     def __init__(
         self,
@@ -374,9 +316,8 @@ class _SessionPool:
         self._slots = threading.BoundedSemaphore(max(1, int(max_concurrency)))
         self.live = 0
 
-    def _new(self, query: str, country: str) -> FbSession:
+    def _new(self) -> FbSession:
         s = FbSession(self._factory(), self._limiter, self._clock, self._sleep)
-        s.mint(query, country)
         with self._lock:
             self.live += 1
         return s
@@ -414,12 +355,12 @@ class _SessionPool:
                 self.live = max(0, self.live - 1)
 
     @contextlib.contextmanager
-    def lease(self, query: str, country: str) -> Iterator[_Lease]:
+    def lease(self) -> Iterator[_Lease]:
         self._slots.acquire()
         try:
             s = self._take()
             if s is None:
-                s = self._new(query, country)
+                s = self._new()
             lease = _Lease(self, s)
             try:
                 yield lease
@@ -431,13 +372,7 @@ class _SessionPool:
     def snapshot(self) -> dict:
         with self._lock:
             free = list(self._free)
-        return {
-            "live": self.live,
-            "warm": len(free),
-            "doc_id": next((s.doc_id for s in free if s.doc_id), ""),
-            "doc_id_source": next((s.doc_id_source for s in free if s.doc_id), "none"),
-            **counters,
-        }
+        return {"live": self.live, "warm": len(free), **counters}
 
     def reset(self) -> None:
         with self._lock:

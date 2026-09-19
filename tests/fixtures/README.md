@@ -1,20 +1,22 @@
 # Fixtures
 
-Saved from the live Ad Library on 2026-09-19 via `facebook-ad-library diag --save-dir diag-out`
-and trimmed by hand so the suite stays small and offline. Refresh them the same way if Meta
-changes the page: run the diag, then cut the new dumps down as below.
+Saved from the live site on 2026-09-19 and trimmed so the tests run offline against what Meta
+actually sends. Tokens are scrubbed; nothing here identifies a session.
 
-| File | What it is | How it was trimmed |
+| File | What it is | How it was made |
 |---|---|---|
-| `challenge_403.html` | the 481-byte `403 Client challenge` page, verbatim | not trimmed |
-| `bootstrap_trimmed.html` | the 200 search page cut to a ±160-char window around each `TOKEN_PATTERNS` match, plus three real bundle `<script src>` tags | token values replaced with obviously fake ones of the same shape |
-| `bundle_snippet.js` | the three-module shape around `AdLibrarySearchPaginationQuery_facebookRelayOperation` | real module text; one neighbour rewritten in the 2025 `"use strict";e.exports` form so both variants are pinned |
-| `search_page1.json` | a GraphQL body with three real collated results and a next cursor | ads beyond the third dropped; the envelope (`data.ad_library_main.search_results_connection`) rebuilt around them |
-| `search_page2_last.json` | same, `has_next_page: false` | same |
-| `search_empty.json` | a body with no edges | synthetic |
-| `rate_limited_1675004.json` | the throttle body from facebook.md §4.3 | synthetic; capture a real one when it happens |
-| `data_null.json` | `data: null` with a non-throttle error code | synthetic |
-| `html_200.html` | a 200 whose body is a login page | synthetic |
+| `challenge_403.html` | the `403 Client challenge` page the first GET on a fresh jar gets, verbatim (481 B) | saved as-is |
+| `ssr_ads.html` | the search page with its results blob: 3 edges, 5 Shakti Mat ads, for `acupressure mat for back pain` / NZ | the `RelayPrefetchedStreamCache` blob was cut out of the 848 KB laptop page, its edges cut to the first three, its cursor replaced, and wrapped in a minimal page with an `LSD` token blob |
+| `ssr_empty.html` | the same page shape with an empty `search_results_connection` (what an exhausted keyword gets) | the blob above with `edges: []`, `count: 0`, `has_next_page: false` |
+| `ssr_miss.html` | the ~573 KB page shape that has no results blob at all | a minimal page with the `LSD` token blob and one unrelated `ScheduledServerJS` blob |
+| `html_200.html` | a `200` that is not the Ad Library page (no `LSD` token) | hand-written |
 
-`diag --save-dir` also writes `search_page<n>_raw.json`, the untouched GraphQL body; use it to
-rebuild the two search fixtures when the envelope changes.
+Regenerate the three `ssr_*.html` files from a fresh page with:
+
+```bash
+uv run facebook-ad-library diag --query "acupressure mat for back pain" --country NZ --save-dir diag-out
+```
+
+then cut the blob that contains `search_results_connection` out of `diag-out/page1_ads.html` and
+trim its `edges` as above. The tests pin the counts (3 edges, 5 ads, first caption
+`shaktimat.com`, page id `775991435791863`), so update them if the trim changes.

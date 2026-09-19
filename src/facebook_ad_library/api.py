@@ -5,14 +5,14 @@ GET  /health    -> counters, useful for Pipeline Health Check
 
 The request body is accepted exactly as Stage 0 sends it to Apify today (`maxItems`, `query`,
 `country`, plus fields the actor took and this service ignores), so the n8n change is the URL
-and the credential. A 200 may be a partial result: past SCRAPE_BUDGET_S the search returns the
-ads it already has with `X-Truncated: true`; a session failure after a good page returns them
-with `X-Pages-Failed: 1`. The body looks identical to a complete run either way.
+and the credential. A 200 is always a complete answer: the page either carries the results or
+the search is an error. `200 []` means the Ad Library really shows no ads for that pair.
 
 Error contract, matched to the siblings:
   400 {"error": {...}}  invalid request (no query, bad country)
   401 {"error": {...}}  bad or missing bearer token
-  503 {"error": {...}}  we were blocked, rate limited, the session died twice, or the doc_id is stale
+  503 {"error": {...}}  we were blocked, rate limited, the session died twice, or every attempt
+                        came back without results (ResultsMissing: not an empty list, on purpose)
   500 {"error": {...}}  unexpected failure, logged with a traceback
 """
 
@@ -39,9 +39,10 @@ from .session import pool
 log = logging.getLogger("facebook_ad_library.api")
 
 counters = {
-    "requests": 0, "ok": 0, "empty": 0, "partial": 0, "truncated": 0, "cache_hits": 0,
-    "bad_request": 0, "blocked": 0, "rate_limited": 0, "docid_stale": 0, "failed": 0, "in_flight": 0,
+    "requests": 0, "ok": 0, "empty": 0, "retried": 0, "cache_hits": 0,
+    "bad_request": 0, "blocked": 0, "rate_limited": 0, "results_missing": 0, "failed": 0, "in_flight": 0,
 }
+_FAILURE_COUNTER = {"RateLimited": "rate_limited", "ResultsMissing": "results_missing", "ScrapeBlocked": "blocked"}
 cache = TTLCache(settings.cache_ttl_s, settings.cache_empty_ttl_s, settings.cache_max_entries)
 
 
@@ -117,29 +118,32 @@ async def facebook(req: SearchRequest):
         if not query:
             raise ValueError("invalid request: `query` is required")
         country = normalise_country(req.country)
-        normalise_active_status(req.active_status)
+        status = normalise_active_status(req.active_status)
     except ValueError as e:
         counters["bad_request"] += 1
         return JSONResponse(status_code=400, content=_error_body(e, 400))
 
-    key = TTLCache.key(query, country, req.max_items) + (req.active_status.lower(),)
+    # One GET answers every size up to the page's 30, so the cache holds the whole page and
+    # `maxItems` is applied on the way out.
+    key = TTLCache.key(query, country, status)
     cached = cache.get(key)
     if cached is not None:
+        items = cached[: req.max_items]
         counters["cache_hits"] += 1
-        counters["ok" if cached else "empty"] += 1
-        log.info("cache hit %r %s -> %d item(s)", query, country, len(cached))
-        return JSONResponse(content=cached, headers={"X-Cache": "hit", "X-Pages-Fetched": "0", "X-Scrape-Seconds": "0"})
+        counters["ok" if items else "empty"] += 1
+        log.info("cache hit %r %s -> %d item(s)", query, country, len(items))
+        return JSONResponse(content=items, headers={"X-Cache": "hit", "X-Attempts": "0", "X-Scrape-Seconds": "0"})
 
     started = time.time()
     counters["in_flight"] += 1
     try:
-        result = await asyncio.to_thread(search, query, country, req.max_items, req.active_status, pool=pool)
+        result = await asyncio.to_thread(search, query, country, 300, status, pool=pool)
     except ValueError as e:
         counters["bad_request"] += 1
         return JSONResponse(status_code=400, content=_error_body(e, 400))
     except FacebookError as e:
         name = type(e).__name__
-        counters["rate_limited" if name == "RateLimited" else "docid_stale" if name == "DocIdStale" else "blocked" if name == "ScrapeBlocked" else "failed"] += 1
+        counters[_FAILURE_COUNTER.get(name, "failed")] += 1
         log.warning("%s %r %s -> %s: %s", e.status, query, country, name, e)
         return JSONResponse(status_code=e.status, content=_error_body(e, e.status))
     except Exception as e:  # noqa: BLE001
@@ -149,25 +153,20 @@ async def facebook(req: SearchRequest):
     finally:
         counters["in_flight"] -= 1
 
-    items = [to_item(ad, result.query, result.country) for ad in result.ads]
+    page_items = [to_item(ad, result.query, result.country) for ad in result.ads]
+    cache.put(key, page_items)
+    items = page_items[: req.max_items]
     counters["ok" if items else "empty"] += 1
-    if result.truncated:
-        counters["truncated"] += 1
-    if result.partial:
-        counters["partial"] += 1
-    if not result.truncated and not result.partial:
-        cache.put(key, items)
+    if result.misses:
+        counters["retried"] += 1
     log.info(
-        "ok %r %s ads=%d pages=%d swaps=%d %.1fs%s%s",
-        query, country, len(items), result.pages_fetched, result.session_swaps, time.time() - started,
-        " truncated" if result.truncated else "", " partial" if result.partial else "",
+        "ok %r %s ads=%d attempts=%d misses=%d swaps=%d %.1fs",
+        query, country, len(items), result.attempts, result.misses, result.session_swaps, time.time() - started,
     )
     headers = {
         "X-Scrape-Seconds": str(result.seconds),
-        "X-Pages-Fetched": str(result.pages_fetched),
-        "X-Pages-Failed": str(result.pages_failed),
-        # Distinguishes "that is all there was" from "we hit the time budget"; both are 200.
-        "X-Truncated": "true" if result.truncated else "false",
+        "X-Attempts": str(result.attempts),
+        "X-Misses": str(result.misses),
         "X-Session-Swaps": str(result.session_swaps),
         "X-Cache": "miss",
     }
@@ -176,16 +175,13 @@ async def facebook(req: SearchRequest):
 
 @app.get("/health")
 async def health():
-    sessions = pool.snapshot()
     return {
         "status": "ok",
         "version": __version__,
         "auth": bool(settings.api_token),
         "proxy": bool(settings.proxy),
         "max_concurrency": settings.max_concurrency,
-        "doc_id": settings.doc_id or sessions.get("doc_id", ""),
-        "doc_id_source": "env" if settings.doc_id else sessions.get("doc_id_source", "none"),
         **counters,
-        "sessions": sessions,
+        "sessions": pool.snapshot(),
         "cache": cache.stats(),
     }

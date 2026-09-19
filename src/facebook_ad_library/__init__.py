@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 def _print(payload, pretty: bool) -> None:
@@ -49,9 +49,8 @@ def _cmd_search(args: argparse.Namespace) -> int:
                     "query": result.query,
                     "country": result.country,
                     "seconds": result.seconds,
-                    "pages": result.pages_fetched,
-                    "truncated": result.truncated,
-                    "partial": result.partial,
+                    "attempts": result.attempts,
+                    "misses": result.misses,
                     "session_swaps": result.session_swaps,
                     "ads": len(items),
                     "unique_pages": len({i["page_id"] for i in items}),
@@ -61,7 +60,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
             )
             print(
                 f"{result.query!r} {result.country}: {len(items)} ads, {runs[-1]['unique_pages']} pages, "
-                f"{result.pages_fetched} page(s) in {result.seconds}s",
+                f"{result.attempts} GET(s), {result.misses} miss(es) in {result.seconds}s",
                 file=sys.stderr,
             )
     _print({"runs": runs, "failed": failed, "sessions": counters}, args.pretty)
@@ -69,8 +68,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
 
 
 def _cmd_diag(args: argparse.Namespace) -> int:
-    """facebook.md §10 test A and the shape check: bootstrap one session verbosely, then search."""
-    import uuid
+    """One session, step by step: the challenge, the cookies, and what shape each page came in."""
     from pathlib import Path
 
     from . import scraper as wire
@@ -81,74 +79,37 @@ def _cmd_diag(args: argparse.Namespace) -> int:
     if out:
         out.mkdir(parents=True, exist_ok=True)
 
-    def save(name: str, text: str) -> None:
-        if out:
-            (out / name).write_text(text, encoding="utf-8")
-            print(f"  saved {out / name} ({len(text)} bytes)")
-
-    transport = default_transport()
-    if out:
-        # Wrap the transport so the raw pages land on disk for fixture trimming.
-        real_get = transport.get
-
-        def recording_get(url, headers=None):
-            r = real_get(url, headers=headers)
-            if "/ads/library/" in url:
-                save(f"bootstrap_{r.status}.html", r.text)
-            return r
-
-        transport.get = recording_get  # type: ignore[method-assign]
-
-    session = FbSession(transport, RateLimiter(settings.rate_limit_per_min))
-    print(f"impersonate={settings.impersonate} proxy={'yes' if settings.proxy else 'no'} doc_id_override={settings.doc_id or '-'}")
-    print(f"bootstrap {wire.bootstrap_url(args.query, args.country)}")
-    try:
-        session.mint(args.query, args.country)
-    except wire.FacebookError as e:
+    session = FbSession(default_transport(), RateLimiter(settings.rate_limit_per_min))
+    print(f"impersonate={settings.impersonate} proxy={'yes' if settings.proxy else 'no'} retries={settings.ssr_retries}")
+    print(f"page {wire.bootstrap_url(args.query, args.country)}")
+    shapes: list[str] = []
+    for n in range(1, max(1, args.repeat) + 1):
+        try:
+            page, ads = session.fetch(args.query, args.country)
+        except wire.FacebookError as e:
+            for line in session.trace:
+                print("  " + line)
+            print(f"GET {n}: {type(e).__name__}: {e}")
+            if out and session.last_text:
+                (out / f"page{n}_{type(e).__name__}.html").write_text(session.last_text, encoding="utf-8")
+            return 2 if isinstance(e, wire.ScrapeBlocked) else 3
         for line in session.trace:
             print("  " + line)
-        print(f"BOOTSTRAP FAILED: {type(e).__name__}: {e}")
-        return 4 if isinstance(e, wire.DocIdStale) else 2
-    for line in session.trace:
-        print("  " + line)
-    t = session.tokens
-    assert t is not None
-    print("tokens:")
-    for name in wire.TOKEN_PATTERNS:
-        value = getattr(t, name, "")
-        print(f"  {name:17s} {'ok  ' if value else 'MISSING'} {str(value)[:48]}")
-    print(f"doc_id: {session.doc_id} ({session.doc_id_source})")
-
-    if args.print_form:
-        variables = wire.build_variables(
-            query=args.query, country=args.country, cursor=None, collation_token=str(uuid.uuid4()),
-            session_id=session.session_id, first=settings.page_size, extra=wire.variables_extra(),
-        )
-        form = wire.build_form(t, session.doc_id, variables, 1)
-        _print({"form": form, "variables": variables}, True)
-
-    if not args.search:
-        return 0
-
-    cursor = None
-    collation = str(uuid.uuid4())
-    for page in range(1, args.pages + 1):
-        try:
-            ads, cursor = session.search_page(args.query, args.country, cursor, collation, settings.page_size)
-        except wire.FacebookError as e:
-            print(f"page {page}: {type(e).__name__}: {e}")
-            return 3
+        shapes.append(page.value)
         pages = {str(a.get("page_id")) for a in ads}
         first = (ads[0].get("snapshot") or {}) if ads else {}
         print(
-            f"page {page}: {len(ads)} ads, {len(pages)} unique pages, next_cursor={'yes' if cursor else 'no'}"
+            f"GET {n}: {page.value}, {len(ads)} ads, {len(pages)} unique pages"
             f"{'; first: ' + str(first.get('caption')) + ' ' + str(first.get('page_categories')) if ads else ''}"
         )
-        save(f"search_page{page}_raw.json", session.last_text)
-        save(f"search_page{page}.json", json.dumps({"ads": ads, "cursor": cursor}, ensure_ascii=False))
-        if not cursor:
-            break
-    print(f"session: {session.requests_made} call(s), retired={session.retired}")
+        if out:
+            p = out / f"page{n}_{page.value}.html"
+            p.write_text(session.last_text, encoding="utf-8")
+            print(f"  saved {p} ({len(session.last_text)} bytes)")
+    print(f"session: {session.requests_made} GET(s), {session.challenges} challenge(s), retired={session.retired}")
+    if shapes and all(s == "miss" for s in shapes):
+        print("every page came without results; retry, or raise SSR_RETRIES if this persists")
+        return 5
     return 0
 
 
@@ -171,13 +132,11 @@ def main(argv: list[str] | None = None) -> None:
     search_p.add_argument("--pretty", action="store_true")
     search_p.set_defaults(func=_cmd_search)
 
-    diag = sub.add_parser("diag", help="bootstrap one session verbosely and optionally search (facebook.md §10 A)")
+    diag = sub.add_parser("diag", help="fetch the search page on one session verbosely; the deploy check")
     diag.add_argument("--query", default="running shoes")
     diag.add_argument("--country", default="US")
-    diag.add_argument("--search", action="store_true", help="also run search pages on the minted session")
-    diag.add_argument("--pages", type=int, default=1)
-    diag.add_argument("--print-form", action="store_true", help="dump the form body and variables for diffing against DevTools")
-    diag.add_argument("--save-dir", help="write the raw bootstrap HTML and search JSON here (gitignored diag-out/)")
+    diag.add_argument("--repeat", type=int, default=1, help="fetch the same page this many times on the one session")
+    diag.add_argument("--save-dir", help="write each raw page here (gitignored diag-out/)")
     diag.set_defaults(func=_cmd_diag)
 
     args = parser.parse_args(argv)

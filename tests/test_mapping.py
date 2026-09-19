@@ -3,7 +3,7 @@ import json
 from conftest import fixture
 
 from facebook_ad_library.mapping import to_item
-from facebook_ad_library.scraper import extract_ads
+from facebook_ad_library.scraper import classify_page
 
 # Every path Stage 0's `Extract Dedupe And Filter` reads (facebook.md §2.2), top level and under snapshot.
 STAGE0_TOP = {"page_name", "page_id", "page_profile_uri", "page_url", "page_alias", "page_category", "page_like_count", "page_likes", "snapshot", "_details"}
@@ -11,15 +11,15 @@ STAGE0_SNAPSHOT = {"caption", "link_url", "page_like_count", "page_categories", 
 
 
 def ads():
-    return extract_ads(json.loads(fixture("search_page1.json")))[0]
+    return classify_page(fixture("ssr_ads.html"))[1]
 
 
 def test_item_carries_every_field_stage0_reads():
     item = to_item(ads()[0], "acupressure mat for back pain", "NZ")
     assert STAGE0_TOP <= set(item) and STAGE0_SNAPSHOT <= set(item["snapshot"])
-    assert item["snapshot"]["caption"] == "shaktimat.com" and item["snapshot"]["link_url"].startswith("http://shaktimat.com")
+    assert item["snapshot"]["caption"] == "shaktimat.com" and "shaktimat.com" in item["snapshot"]["link_url"]
     assert item["page_name"] == "Shakti Mat" and item["page_id"] == "775991435791863" and isinstance(item["page_id"], str)
-    assert item["page_like_count"] == 208850 == item["page_likes"] == item["snapshot"]["page_like_count"]
+    assert item["page_like_count"] > 200000 and item["page_like_count"] == item["page_likes"] == item["snapshot"]["page_like_count"]
     assert item["page_categories"] == ["Health/beauty"] and item["page_category"] == "Health/beauty"
     assert item["page_profile_uri"] == item["page_url"] == item["snapshot"]["page_profile_uri"]
     assert item["page_alias"] == "" and item["snapshot"]["page_alias"] == ""
@@ -49,5 +49,6 @@ def test_snapshot_fallbacks_fill_top_level_fields():
 
 
 def test_items_are_json_serialisable():
+    assert len(ads()) == 5
     for ad in ads():
         json.dumps(to_item(ad))

@@ -3,15 +3,15 @@ from conftest import Clock
 from facebook_ad_library.cache import TTLCache
 
 
-def test_key_normalises_query_and_country():
-    assert TTLCache.key("  Running Shoes ", "nz", 80) == TTLCache.key("running shoes", "NZ", 80)
-    assert TTLCache.key("a", "US", 80) != TTLCache.key("a", "US", 30)
+def test_key_normalises_query_country_and_status():
+    assert TTLCache.key("  Running Shoes ", "nz", "Active") == TTLCache.key("running shoes", "NZ") == TTLCache.key("running shoes", "NZ", "active")
+    assert TTLCache.key("a", "US") != TTLCache.key("a", "US", "all")
 
 
 def test_miss_put_hit_and_expiry():
     clock = Clock()
     c = TTLCache(100, clock=clock)
-    k = TTLCache.key("a", "US", 80)
+    k = TTLCache.key("a", "US")
     assert c.get(k) is None
     c.put(k, [{"x": 1}])
     assert c.get(k) == [{"x": 1}]
@@ -24,7 +24,7 @@ def test_miss_put_hit_and_expiry():
 
 def test_returned_lists_are_copies():
     c = TTLCache(100)
-    k = TTLCache.key("a", "US", 80)
+    k = TTLCache.key("a", "US")
     c.put(k, [1])
     c.get(k).append(2)
     assert c.get(k) == [1]
@@ -33,7 +33,7 @@ def test_returned_lists_are_copies():
 def test_empty_results_expire_sooner():
     clock = Clock()
     c = TTLCache(1000, empty_ttl_s=10, clock=clock)
-    k = TTLCache.key("a", "US", 80)
+    k = TTLCache.key("a", "US")
     c.put(k, [])
     assert c.get(k) == []
     clock.advance(11)

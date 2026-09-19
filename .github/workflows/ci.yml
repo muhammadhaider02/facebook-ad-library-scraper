@@ -70,7 +70,7 @@ jobs:
                   assert d[0]['page_name'] and 'caption' in d[0]['snapshot'], d[0]
               print(f'200: {len(d)} ads, {len({r[\"page_id\"] for r in d})} advertisers')
           elif status == '503':
-              assert d['error']['type'] in ('ScrapeBlocked', 'RateLimited', 'DocIdStale', 'ScrapeFailed'), d
+              assert d['error']['type'] in ('ScrapeBlocked', 'RateLimited', 'ResultsMissing', 'ScrapeFailed'), d
               print('503 from a runner IP:', d['error']['type'], d['error']['message'][:120])
           else:
               raise SystemExit(f'unexpected status {status}: {d}')

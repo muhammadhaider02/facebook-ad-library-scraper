@@ -34,7 +34,7 @@ class FakeFacebook:
     """Stands in for curl_cffi: maps URL prefixes to scripted responses and records every call.
 
     Each prefix holds a queue; a call pops the next response and the last one repeats, so a
-    bootstrap script is [challenge, page] and a search script is one response per page.
+    page script is one response per GET of the search page.
     """
 
     def __init__(self, script: dict[str, list[Resp]] | None = None) -> None:
@@ -65,24 +65,25 @@ class FakeFacebook:
         return sorted(self.cookies)
 
     @property
-    def graphql_calls(self) -> list[tuple[str, str, dict | None, dict]]:
-        return [c for c in self.calls if c[1] == wire.GRAPHQL]
+    def page_gets(self) -> list[tuple[str, str, dict | None, dict]]:
+        return [c for c in self.calls if c[0] == "GET" and c[1].startswith(wire.AD_LIBRARY)]
 
 
-def json_resp(name: str, status: int = 200) -> Resp:
-    return Resp(status, fixture(name))
+def page(name: str = "ssr_ads.html", status: int = 200) -> Resp:
+    return Resp(status, fixture(name), {"X-FB-Rd": "0"})
 
 
-def site(graphql: list[Resp] | None = None, challenge: bool = True, bootstrap: Resp | None = None, bundle: Resp | None = None) -> FakeFacebook:
-    """A FakeFacebook that mints cleanly: challenge -> trimmed page -> bundle with the doc_id -> the given search pages."""
-    page = bootstrap or Resp(200, fixture("bootstrap_trimmed.html"), {"X-FB-Rd": "0"})
-    boot = [Resp(403, fixture("challenge_403.html"), {"X-FB-Rd": "1"}), page] if challenge else [page]
+CHALLENGE = Resp(403, fixture("challenge_403.html"), {"X-FB-Rd": "1"})
+
+
+def site(pages: list[Resp] | None = None, challenge: bool = True) -> FakeFacebook:
+    """A FakeFacebook whose search page answers `pages` in order (the last one repeats), after
+    the one-time challenge when `challenge` is set."""
+    pages = list(pages or [page()])
     return FakeFacebook(
         {
-            wire.AD_LIBRARY: boot,
+            wire.AD_LIBRARY: ([CHALLENGE] if challenge else []) + pages,
             wire.ORIGIN + "/__rd_verify": [Resp(200, "")],
-            "https://static.xx.fbcdn.net/": [bundle or Resp(200, fixture("bundle_snippet.js"))],
-            wire.GRAPHQL: list(graphql or [json_resp("search_page1.json"), json_resp("search_page2_last.json")]),
         }
     )
 
@@ -113,11 +114,10 @@ def fast_settings():
     from facebook_ad_library import api, session
     from facebook_ad_library.config import settings
 
-    before = {k: getattr(settings, k) for k in ("spacing_min_s", "spacing_max_s", "rate_limit_sleep_s", "doc_id", "variables_json", "max_pages", "scrape_budget_s")}
+    before = {k: getattr(settings, k) for k in ("api_token", "spacing_min_s", "spacing_max_s", "rate_limit_sleep_s", "ssr_retries", "miss_streak_retire", "scrape_budget_s")}
+    set_frozen(settings, "api_token", "")  # a filled local .env must not turn the API tests into 401s
     set_frozen(settings, "spacing_min_s", 0)
     set_frozen(settings, "spacing_max_s", 0)
-    set_frozen(settings, "doc_id", "")
-    set_frozen(settings, "variables_json", "")
     session.reset_counters()
     session.pool.reset()
     api.cache.clear()

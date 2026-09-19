@@ -1,10 +1,10 @@
 """A small in-memory result cache with a TTL.
 
 Stage 0 re-searches an exhausted keyword's remaining country slots and retries a pair on error,
-so the same (query, country, size) arrives more than once a day. Each hit saves three GraphQL
-calls and ~450 KB. Only complete results are stored: a truncated or partial answer would pin a
-short list for a day. Empty results get a shorter life because a soft block looks exactly like
-a keyword with no ads.
+so the same (query, country) arrives more than once a day. Each hit saves a page GET of about
+1 MB. The whole page is stored and `maxItems` applied on the way out, because one GET answers
+every size up to the page's 30. Empty results get a shorter life because a keyword with no ads
+today may have some tomorrow.
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ class TTLCache:
         self.evictions = 0
 
     @staticmethod
-    def key(query: str, country: str, max_items: int) -> tuple:
-        return (str(query or "").strip().casefold(), str(country or "").strip().upper(), int(max_items))
+    def key(query: str, country: str, active_status: str = "active") -> tuple:
+        return (str(query or "").strip().casefold(), str(country or "").strip().upper(), str(active_status or "active").strip().lower())
 
     def get(self, key: tuple) -> list | None:
         now = self._clock()

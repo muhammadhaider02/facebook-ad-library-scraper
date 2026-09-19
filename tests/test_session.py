@@ -1,275 +1,263 @@
+"""The session lifecycle on scripted transports: the challenge, the page shapes, retirement, the pool."""
+
 import threading
 
 import pytest
-from conftest import Clock, FakeFacebook, Resp, fixture, json_resp, make_pool, make_session, set_frozen, site
+from conftest import CHALLENGE, Clock, fixture, make_pool, make_session, page, set_frozen, site
 
 from facebook_ad_library import scraper as wire
-from facebook_ad_library import session as sess
 from facebook_ad_library.config import settings
-from facebook_ad_library.scraper import DocIdStale, RateLimited, ScrapeBlocked, ScrapeFailed, SessionDead
-from facebook_ad_library.session import RateLimiter
+from facebook_ad_library.scraper import Page, RateLimited, ScrapeBlocked, ScrapeFailed, SessionDead
+from facebook_ad_library.session import RateLimiter, Resp, counters
 
-# --------------------------------------------------------------------------- mint
+# --------------------------------------------------------------------------- fetch()
 
 
-def test_mint_clears_the_challenge_and_reads_tokens_and_doc_id():
+def test_first_fetch_clears_the_challenge_and_reads_the_page():
     fb = site()
     s = make_session(fb)
-    s.mint("running shoes", "US")
-    methods = [(m, u.split("?")[0]) for m, u, _, _ in fb.calls]
-    assert methods[0] == ("GET", wire.AD_LIBRARY)
-    assert methods[1][0] == "POST" and "__rd_verify" in methods[1][1]
-    assert methods[2] == ("GET", wire.AD_LIBRARY)
-    assert methods[3][0] == "GET" and methods[3][1].startswith("https://static.xx.fbcdn.net/")
-    # the challenge POST carries the page as referer, the bootstrap GETs look like a navigation
-    assert fb.calls[1][3]["Referer"] == s.referer and fb.calls[1][3]["Origin"] == wire.ORIGIN
-    assert fb.calls[0][3]["Upgrade-Insecure-Requests"] == "1"
-    assert s.minted and s.tokens.lsd == "FIXTURELSDTOKEN0000000000"
-    assert s.doc_id == "24922295957467452" and s.doc_id_source == "discovered"
-    assert sess.counters["challenges"] == 1 and sess.counters["sessions_minted"] == 1
-    assert any(line.startswith("POST challenge 200 cookies=rd_challenge") for line in s.trace)
+    kind, ads = s.fetch("acupressure mat for back pain", "NZ")
+    assert kind is Page.ADS and len(ads) == 5
+    methods = [(c[0], c[1].split("?")[0]) for c in fb.calls]
+    assert [m[0] for m in methods] == ["GET", "POST", "GET"]
+    assert methods[0][1] == methods[2][1] == wire.AD_LIBRARY and methods[1][1].startswith("https://www.facebook.com/__rd_verify_")
+    post = fb.calls[1]
+    assert post[3]["Origin"] == wire.ORIGIN and post[3]["Referer"].startswith(wire.AD_LIBRARY)
+    assert fb.calls[0][3]["Accept"].startswith("text/html") and fb.calls[0][3]["Upgrade-Insecure-Requests"] == "1"
+    assert s.challenges == 1 and counters["challenges"] == 1 and s.requests_made == 1 and counters["calls"] == 1
+    assert s.trace[0].startswith("GET 403") and "POST challenge 200 cookies=rd_challenge" in s.trace[1] and s.trace[-1] == "page=ads ads=5"
+    assert counters["sessions_minted"] == 1
 
 
-def test_mint_without_a_challenge():
-    fb = site(challenge=False)
+def test_later_fetches_on_the_same_jar_are_not_challenged():
+    fb = site([page(), page("ssr_empty.html")])
     s = make_session(fb)
-    s.mint("q", "US")
-    assert [m for m, *_ in fb.calls] == ["GET", "GET"] and sess.counters["challenges"] == 0
+    s.fetch("a", "US")
+    kind, ads = s.fetch("b", "US")
+    assert kind is Page.EMPTY and ads == [] and len(fb.page_gets) == 3 and s.challenges == 1
 
 
-def test_doc_id_from_env_skips_the_bundles():
-    set_frozen(settings, "doc_id", "111")
-    fb = site()
-    s = make_session(fb)
-    s.mint("q", "US")
-    assert s.doc_id == "111" and s.doc_id_source == "env"
-    assert not any(u.startswith("https://static.xx") for _, u, _, _ in fb.calls)
-
-
-def test_no_doc_id_anywhere_is_docid_stale():
-    fb = site(bundle=Resp(200, "nothing relevant"))
-    with pytest.raises(DocIdStale, match="FB_DOC_ID"):
-        make_session(fb).mint("q", "US")
-    assert sess.counters["docid_stale"] == 1
+def test_challenge_page_without_a_url_is_a_block():
+    fb = site([page()])
+    fb.script[wire.AD_LIBRARY][0] = Resp(403, "<html>__rd_verify but no fetch()</html>", {"X-FB-Rd": "1"})
+    with pytest.raises(ScrapeBlocked, match="parseable"):
+        make_session(fb).fetch("a", "US")
 
 
 def test_403_without_the_marker_is_a_block():
-    fb = site(bootstrap=Resp(403, "<html><title>Forbidden</title></html>"), challenge=False)
-    with pytest.raises(ScrapeBlocked, match="HTTP 403"):
-        make_session(fb).mint("q", "US")
-    assert sess.counters["blocked"] == 1
+    with pytest.raises(ScrapeBlocked, match="403 without a challenge"):
+        make_session(site([Resp(403, "<title>Forbidden</title>")], challenge=False)).fetch("a", "US")
+    assert counters["blocked"] == 1
 
 
 def test_400_after_the_challenge_names_the_tls_symptom():
-    fb = site(bootstrap=Resp(400, "<html>Sorry, something went wrong.</html>"))
     with pytest.raises(ScrapeBlocked, match="TLS fingerprint"):
-        make_session(fb).mint("q", "US")
+        make_session(site([Resp(400, "<title>Sorry, something went wrong</title>")])).fetch("a", "US")
 
 
-def test_page_without_lsd_is_a_block():
-    fb = site(bootstrap=Resp(200, "<html><title>Ad Library</title></html>"))
-    with pytest.raises(ScrapeBlocked, match="lsd"):
-        make_session(fb).mint("q", "US")
+def test_429_is_rate_limited():
+    with pytest.raises(RateLimited, match="429"):
+        make_session(site([Resp(429, "")])).fetch("a", "US")
+    assert counters["rate_limited"] == 1
 
 
-def test_network_failure_during_mint_is_scrape_failed():
-    class Boom(FakeFacebook):
+@pytest.mark.parametrize("resp", [Resp(302, "", {"Location": "/login"}), Resp(200, fixture("html_200.html"))])
+def test_unexpected_status_or_foreign_page_is_session_dead(resp):
+    with pytest.raises(SessionDead):
+        make_session(site([resp])).fetch("a", "US")
+    assert counters["session_dead"] == 1
+
+
+def test_transients_retry_with_backoff_then_fail():
+    sleeps: list = []
+    s = make_session(site([Resp(503, "x"), Resp(502, "y"), page()]), sleeps=sleeps)
+    kind, ads = s.fetch("a", "US")
+    assert kind is Page.ADS and sleeps == [1.0, 3.0] and s.requests_made == 3 and counters["transient"] == 2
+
+    class Boom:
         def get(self, url, headers=None):
-            raise ConnectionError("dns")
+            raise ConnectionError("reset")
+
+        def post(self, url, data=None, headers=None):
+            raise AssertionError
+
+        def cookie_names(self):
+            return []
 
     with pytest.raises(ScrapeFailed, match="ConnectionError"):
-        make_session(Boom()).mint("q", "US")
+        make_session(Boom()).fetch("a", "US")
 
 
-# --------------------------------------------------------------------------- search_page
-
-
-def minted(fb=None, **kw):
-    fb = fb or site()
-    s = make_session(fb, **kw)
-    s.mint("q", "US")
-    return s, fb
-
-
-def test_search_page_posts_the_form_with_the_headers():
-    s, fb = minted()
-    ads, cursor = s.search_page("running shoes", "US", None, "col", 30)
-    assert len(ads) == 3 and cursor == "AQHRfixturecursor1"
-    _, url, data, headers = fb.graphql_calls[0]
-    assert url == wire.GRAPHQL and tuple(data) == wire.FORM_FIELDS
-    assert headers["X-FB-LSD"] == s.tokens.lsd and headers["Referer"] == s.referer
-    assert s.requests_made == 1 and s.last_text.startswith("{")
-
-
-def test_search_page_raises_typed_errors():
-    for name, exc in (("rate_limited_1675004.json", RateLimited), ("data_null.json", DocIdStale), ("html_200.html", SessionDead)):
-        s, _ = minted(site([json_resp(name)]))
-        with pytest.raises(exc):
-            s.search_page("q", "US", None, "c", 30)
-    s, _ = minted(site([Resp(200, "garbage")]))
-    with pytest.raises(SessionDead, match="unparseable"):
-        s.search_page("q", "US", None, "c", 30)
-    assert sess.counters["rate_limited"] == 1 and sess.counters["docid_stale"] == 1 and sess.counters["session_dead"] == 2
-
-
-def test_search_page_retries_transients_and_counts_bytes():
-    sleeps = []
-    s, fb = minted(site([Resp(500, "x"), json_resp("search_page1.json")]), sleeps=sleeps)
-    ads, _ = s.search_page("q", "US", None, "c", 30)
-    assert len(ads) == 3 and sleeps == [1.0] and s.requests_made == 2
-    assert sess.counters["transient"] == 1 and sess.counters["calls"] == 2 and sess.counters["bytes"] > 1000
+def test_bytes_and_last_text_are_recorded():
+    s = make_session(site())
+    s.fetch("a", "US")
+    assert counters["bytes"] == len(fixture("ssr_ads.html")) and s.last_text == fixture("ssr_ads.html")
 
 
 def test_retired_session_refuses_calls():
-    s, _ = minted()
+    s = make_session(site())
     s.retire("test")
     with pytest.raises(SessionDead, match="retired"):
-        s.search_page("q", "US", None, "c", 30)
-    assert sess.counters["retired_by_reason"] == {"test": 1}
+        s.fetch("a", "US")
+    assert counters["retired_by_reason"] == {"test": 1}
+    s.retire("again")  # idempotent
+    assert counters["sessions_retired"] == 1
 
 
-def test_empty_streak_retires_the_session():
-    set_frozen(settings, "empty_streak_retire", 2)
-    s, _ = minted(site([json_resp("search_empty.json")]))
-    s.search_page("q", "US", None, "c", 30)
-    assert not s.retired
-    s.search_page("q2", "US", None, "c", 30)
-    assert s.retired and s.retire_reason == "empty_streak"
-
-
-def test_a_page_with_ads_resets_the_empty_streak():
-    set_frozen(settings, "empty_streak_retire", 2)
-    s, _ = minted(site([json_resp("search_empty.json"), json_resp("search_page1.json"), json_resp("search_empty.json")]))
-    for _ in range(3):
-        s.search_page("q", "US", None, "c", 30)
-    assert not s.retired and s.empty_streak == 1
-
-
-# --------------------------------------------------------------------------- expiry and pacing
+def test_miss_streak_retires_the_session_and_a_result_resets_it():
+    set_frozen(settings, "miss_streak_retire", 2)
+    s = make_session(site([page("ssr_miss.html"), page("ssr_empty.html"), page("ssr_miss.html"), page("ssr_miss.html")]))
+    assert s.fetch("a", "US")[0] is Page.MISS and s.miss_streak == 1
+    assert s.fetch("a", "US")[0] is Page.EMPTY and s.miss_streak == 0  # an empty result is a result
+    s.fetch("a", "US")
+    s.fetch("a", "US")
+    assert s.retired and s.retire_reason == "miss_streak" and counters["misses"] == 3
 
 
 def test_session_expires_by_request_count_and_age():
-    set_frozen(settings, "session_max_requests", 2)
     clock = Clock()
-    s, _ = minted(clock=clock)
-    assert not s.expired
-    s.search_page("q", "US", None, "c", 30)
-    s.search_page("q", "US", None, "c", 30)
-    assert s.expired
-    set_frozen(settings, "session_max_requests", 200)
-    assert not s.expired
-    clock.advance(settings.session_max_age_s + 1)
-    assert s.expired
+    set_frozen(settings, "session_max_requests", 2)
+    set_frozen(settings, "session_max_age_s", 100)
+    try:
+        s = make_session(site(), clock=clock)
+        assert not s.expired
+        s.fetch("a", "US")
+        s.fetch("b", "US")
+        assert s.expired
+        s2 = make_session(site(), clock=clock)
+        clock.advance(101)
+        assert s2.expired
+    finally:
+        set_frozen(settings, "session_max_requests", 200)
+        set_frozen(settings, "session_max_age_s", 7200)
 
 
 def test_pacing_waits_the_spacing_gap_between_calls():
     set_frozen(settings, "spacing_min_s", 2)
     set_frozen(settings, "spacing_max_s", 2)
-    sleeps = []
-    s, _ = minted(sleeps=sleeps)
-    s.search_page("q", "US", None, "c", 30)
-    s.search_page("q", "US", None, "c", 30)
-    assert sleeps == [2]  # the first call has nothing to wait for
+    sleeps: list = []
+    s = make_session(site([page(), page()]), sleeps=sleeps)
+    s.fetch("a", "US")
+    s.fetch("b", "US")
+    assert sleeps == [2]  # nothing before the first call, one gap before the second
 
 
 def test_rate_limiter_delays_the_call_over_the_window():
     clock, sleeps = Clock(), []
-    limiter = RateLimiter(2, clock, lambda s: (sleeps.append(s), clock.advance(s)))
-    limiter.wait()
-    limiter.wait()
-    limiter.wait()
-    assert sleeps == [60.0]  # third call waited for the window to clear
-    limiter.wait()  # second stamp at t=60, no wait
+    lim = RateLimiter(2, clock, lambda s: (sleeps.append(s), clock.advance(s)))
+    lim.wait()
     clock.advance(30)
-    limiter.wait()  # both stamps 30 s old -> waits the remaining 30 s
-    assert sleeps == [60.0, 30.0]
+    lim.wait()
+    lim.wait()  # third inside the window: waits until the first stamp is 60 s old
+    assert sleeps == [30.0]
+    clock.advance(31)
+    lim.wait()
+    assert sleeps == [30.0]
 
 
 # --------------------------------------------------------------------------- pool
 
 
-def test_pool_mints_lazily_and_reuses_round_robin():
-    a, b = site(), site()
-    pool = make_pool([a, b], size=2)
-    with pool.lease("q", "US") as l1:
-        first = l1.session
-    with pool.lease("q", "US") as l2:
-        assert l2.session is first  # only one warm session, so it comes straight back
-    assert pool.live == 1 and sess.counters["sessions_minted"] == 1
+def test_pool_creates_lazily_and_reuses_round_robin():
+    pool = make_pool([site([page(), page()]), site([page(), page()])])
+    assert counters["sessions_minted"] == 0
+    with pool.lease() as a:
+        a.session.fetch("a", "US")
+    with pool.lease() as b:
+        b.session.fetch("b", "US")
+    assert a.session is b.session and counters["sessions_minted"] == 1 and pool.snapshot()["live"] == 1
 
 
 def test_pool_drops_retired_and_expired_sessions_on_the_way_back_in():
     pool = make_pool([site(), site()])
-    with pool.lease("q", "US") as lease:
-        lease.session.retire("test")
-    assert pool.live == 0
-    with pool.lease("q", "US") as lease:
-        assert not lease.session.retired
-    assert sess.counters["sessions_minted"] == 2
+    with pool.lease() as a:
+        a.session.retire("test")
+    assert pool.snapshot()["live"] == 0
+    with pool.lease() as b:
+        assert b.session is not a.session
+    assert pool.snapshot() == {**pool.snapshot(), "live": 1, "warm": 1}
 
 
 def test_pool_retires_an_expired_session_when_leased():
-    set_frozen(settings, "session_max_requests", 1)
+    clock = Clock()
+    set_frozen(settings, "session_max_age_s", 10)
+    try:
+        pool = make_pool([site(), site()], clock=clock)
+        with pool.lease() as a:
+            pass
+        clock.advance(11)
+        with pool.lease() as b:
+            assert b.session is not a.session
+        assert counters["retired_by_reason"] == {"expired": 1}
+    finally:
+        set_frozen(settings, "session_max_age_s", 7200)
+
+
+def test_lease_replace_creates_a_fresh_session_once():
     pool = make_pool([site(), site()])
-    with pool.lease("q", "US") as lease:
-        lease.session.search_page("q", "US", None, "c", 30)
+    with pool.lease() as lease:
         first = lease.session
-    with pool.lease("q", "US") as lease:
-        assert lease.session is not first
-    assert first.retired and first.retire_reason == "expired"
-
-
-def test_lease_replace_mints_a_fresh_session_once():
-    pool = make_pool([site(), site()])
-    with pool.lease("q", "US") as lease:
-        old = lease.session
-        new = lease.replace("q", "US")
-        assert new is not old and old.retired and lease.swaps == 1 and new.minted
-    assert pool.live == 1
+        fresh = lease.replace()
+        assert fresh is not first and first.retired and first.retire_reason == "dropped" and lease.swaps == 1
+    assert pool.snapshot()["live"] == 1 and pool.snapshot()["warm"] == 1
 
 
 def test_pool_bounds_concurrency_with_the_semaphore():
-    pool = make_pool([site(), site(), site()], size=3, max_concurrency=1)
+    pool = make_pool([site()], size=2, max_concurrency=1)
     entered, release = threading.Event(), threading.Event()
 
     def hold():
-        with pool.lease("q", "US"):
+        with pool.lease():
             entered.set()
             release.wait(2)
 
     t = threading.Thread(target=hold)
     t.start()
-    entered.wait(2)
-    assert not pool._slots.acquire(blocking=False)  # the one slot is taken
+    assert entered.wait(2)
+    assert not pool._slots.acquire(timeout=0.1)  # the one slot is taken
     release.set()
     t.join(2)
-    assert pool._slots.acquire(blocking=False)
+    assert pool._slots.acquire(timeout=1)
     pool._slots.release()
 
 
-def test_snapshot_reports_doc_id_and_counters():
-    pool = make_pool([site()])
-    with pool.lease("q", "US"):
-        pass
+def test_pool_keeps_at_most_size_warm():
+    pool = make_pool([site(), site(), site()], size=1)
+    with pool.lease() as a, pool.lease() as b:
+        assert a.session is not b.session
     snap = pool.snapshot()
-    assert snap["live"] == 1 and snap["warm"] == 1 and snap["doc_id"] == "24922295957467452" and snap["doc_id_source"] == "discovered"
-    assert snap["sessions_minted"] == 1 and snap["challenges"] == 1
+    assert snap["warm"] == 1 and snap["live"] == 1 and counters["retired_by_reason"] == {"surplus": 1}
+
+
+def test_snapshot_reports_counters():
+    pool = make_pool([site()])
+    with pool.lease() as lease:
+        lease.session.fetch("a", "US")
+    snap = pool.snapshot()
+    assert snap["live"] == 1 and snap["warm"] == 1 and snap["calls"] == 1 and snap["challenges"] == 1 and snap["sessions_minted"] == 1
 
 
 def test_curl_transport_builds_with_the_configured_impersonation(monkeypatch):
+    import sys
+    import types
+
     seen = {}
 
     class FakeSession:
         def __init__(self, **kw):
+            seen.clear()
             seen.update(kw)
             self.headers = {}
-            self.cookies = type("J", (), {"jar": []})()
+            self.cookies = types.SimpleNamespace(jar=[])
 
-    import curl_cffi.requests as cr
+    fake = types.ModuleType("curl_cffi")
+    fake.requests = types.SimpleNamespace(Session=FakeSession)
+    monkeypatch.setitem(sys.modules, "curl_cffi", fake)
+    monkeypatch.setitem(sys.modules, "curl_cffi.requests", fake.requests)
+    from facebook_ad_library.session import CurlTransport
 
-    monkeypatch.setattr(cr, "Session", FakeSession)
-    sess.CurlTransport(impersonate="chrome131", timeout_s=7, proxy="http://u:p@h:10001")
-    assert seen == {"impersonate": "chrome131", "timeout": 7, "proxy": "http://u:p@h:10001"}
-    seen.clear()
-    sess.CurlTransport()
-    assert seen["impersonate"] == settings.impersonate and "proxy" not in seen
+    t = CurlTransport(impersonate="chrome", timeout_s=12, proxy="http://u:p@h:1")
+    assert seen == {"impersonate": "chrome", "timeout": 12, "proxy": "http://u:p@h:1"}
+    assert t._s.headers["Accept-Language"].startswith("en-US") and t.cookie_names() == []
+    CurlTransport()
+    assert seen == {"impersonate": settings.impersonate, "timeout": settings.request_timeout_s}
