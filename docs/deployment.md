@@ -99,11 +99,11 @@ docker exec facebook-ad-library python -c "import urllib.request;print(urllib.re
 
 ## Rotating credentials
 
-`API_TOKEN`: change it in `.env`, recreate the container, then update the n8n Header Auth credential to match. The credential does not exist yet; create it as `facebook-scraper`, a Header Auth credential sending `Authorization: Bearer <token>`, the same shape as `trustpilot-scraper` and `reddit-scraper`. Retrieve tokens in a terminal, not in anything that keeps a transcript: `grep ^API_TOKEN /opt/facebook-ad-library-scraper/.env` on the VPS.
+`API_TOKEN`: change it in `.env`, recreate the container, then update the n8n Header Auth credential `facebook-scraper` (`5K2ikYegpPkEPGfn`, sending `Authorization: Bearer <token>`, the same shape as `trustpilot-scraper` and `reddit-scraper`) to match. Edit that credential in place; do not rename another one into it. Retrieve tokens in a terminal, not in anything that keeps a transcript: `grep ^API_TOKEN /opt/facebook-ad-library-scraper/.env` on the VPS.
 
 ## Testing against the pipeline
 
-The production workflow is not edited. The service is exercised in the n8n workflow **`scraper-testing`** (`0q7jtSF7FG0cbyBe`) on the same instance, the way the Trustpilot and Reddit lanes there already do. `fb.md` describes the harness that exists there: a `Start FB Test` trigger, `FB Keyword List` with 12 keyword-country pairs, a disabled clone of Stage 0's Apify node, `Measure FB Response` with Stage 0's extraction verbatim, and `Collect FB Results`. Pointing the clone at this service needs the deploy above and the `facebook-scraper` credential, then four edits to that one node: the URL, the auth, the body (unchanged in shape), and enabling it.
+The production workflow is not edited. The service is exercised in the n8n workflow **`scraper-testing`** (`0q7jtSF7FG0cbyBe`) on the same instance, the way the Trustpilot and Reddit lanes there already do. `fb.md` describes the harness that exists there: a `Start FB Test` trigger, `FB Keyword List` with 12 keyword-country pairs, a disabled clone of Stage 0's Apify node, `Measure FB Response` with Stage 0's extraction verbatim, and `Collect FB Results`. The clone was pointed at this service on 19 Sep 2026 (URL, the `facebook-scraper` credential, no query parameters, enabled; body unchanged) and the run is reported in [n8n-test-2026-09-19.md](n8n-test-2026-09-19.md).
 
 ## What to watch
 
