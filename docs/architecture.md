@@ -24,7 +24,7 @@ Three consequences for this code:
 
 ## How a search is made
 
-The Ad Library is a logged-out React site. When its search page is requested, Meta runs the search on the server and embeds the first page of results in the HTML, as a prefetched Relay stream that is byte-for-byte what the frontend's own first GraphQL call would return. This service reads that and nothing else: **one GET per keyword-and-country pair**. Measured against the live site on 19 Sep 2026 from a laptop and from the VPS ([address-classification.md](address-classification.md) has the runs):
+The Ad Library is a logged-out React site. When its search page is requested, Meta runs the search on the server and embeds the first page of results in the HTML, as a prefetched Relay stream that is byte-for-byte what the frontend's own first GraphQL call would return. This service reads that and nothing else: **one GET per keyword-and-country pair**. Measured against the live site on 19 Sep 2026 from a laptop and from the VPS (the runs are under [Measured against Apify](#measured-against-apify)):
 
 1. **The GET.** `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=NZ&q=<keyword>&search_type=keyword_unordered&media_type=all`, the URL the site's own address bar shows. On a fresh cookie jar it answers `403 Client challenge` with a 481-byte page whose script does `fetch('/__rd_verify_<token>?challenge=3', {method: 'POST'})` and reloads. The path is relative. One POST to it returns `200` and a `rd_challenge` cookie (`Max-Age=86400`); the re-GET returns the page and sets `datr`. Later GETs on that jar are not challenged: 41 in a row were measured without one.
 2. **The page.** 0.6 to 1.7 MB of HTML with about 40 `<script type="application/json">` blobs. One of them, when present, holds `RelayPrefetchedStreamCache` → `result.data.ad_library_main.search_results_connection` with `edges[].node.collated_results[]` and a `page_info`. The service parses only the blob that mentions `search_results_connection` and flattens the collated results, unique by `ad_archive_id`, in page order. Up to 30 ads per page; 15 to 20 distinct advertisers among them on the productive keywords measured.
@@ -38,7 +38,7 @@ The Ad Library is a logged-out React site. When its search page is requested, Me
 
    A miss is never turned into an empty list, because Stage 0 reads an empty list as "no inventory" and retires a keyword after two of them. The real empty result is distinguishable, so the retry never loops on a keyword that is simply dry.
 
-Why not the GraphQL endpoint the frontend uses to scroll past the first page: Meta answers `POST /api/graphql/` from datacenter addresses (Hostinger, GitHub's runners) with error `1675004` on the very first call of a fresh session, keyed on the source address, while it serves the page to the same address without a throttle. From a residential address it gave about 10 ads a call regardless of the `first` asked for, so three calls, which is what the previous design made, gave the same 30 the page gives in one. Nothing is lost.
+Why not the GraphQL endpoint the frontend uses to scroll past the first page: Meta answers `POST /api/graphql/` from datacenter addresses (Hostinger, GitHub's runners) with error `1675004` on the very first call of a fresh session, keyed on the source address, while it serves the page to the same address without a throttle. From a residential address it gave about 10 ads a call regardless of the `first` asked for, so three calls, which is what the first version of this service made, gave the same 30 the page gives in one. Nothing is lost. The measurements behind that are below.
 
 ## Why no browser, and why Chrome TLS
 
@@ -97,6 +97,38 @@ One Python process with no browser. Each in-flight search holds one page of up t
 
 `MAX_CONCURRENCY` (2) bounds searches in flight. Stage 0 sends one pair at a time; two lets a slow pair overlap the next run without doubling the request rate from the address. The global limiter, not the semaphore, is what shapes the traffic Meta sees.
 
+## Measured against Apify
+
+The address question first, 19 Sep 2026, same commit and same query from both machines, no proxy anywhere. Every request body and page from these runs is kept under `diag-out/address-classification-2026-09-19/` (gitignored) with the probe that produced them.
+
+| Test | Source address | Result |
+|---|---|---|
+| GraphQL, control | laptop, residential | 10 of 10 searches, about 10 ads each |
+| GraphQL, laptop-minted session replayed | VPS, Hostinger v4 | refused at call 1 in 46 ms with `1675004`; the same session kept working from the laptop |
+| GraphQL, fresh session; again after 10 min idle | VPS v4 | refused at call 1 both times |
+| GraphQL over IPv6 | VPS v6 | reaches Facebook, refused at call 1; other addresses in the /64 are not routed by Hostinger |
+| Legacy `/ads/library/async/search_ads/` | both | `404`, the endpoint is gone |
+| GraphQL `first` 10 / 30 / 60 / 100 | laptop | identical body, about 10 edges: Meta ignores `first` |
+| **Page GET, 20 keywords** | **VPS v4** | **20 of 20 `200`, no challenge after the first, 345 ads; 5 pages came without the results blob** |
+| Page GET, the 3 no-results keywords retried ×3 | VPS v4 | 6 of 9 carried ads: the miss is per request, not per keyword |
+| Page GET, the 2 exhausted keywords ×3 | VPS v4 | 0 ads with an explicit empty results blob on 5 of 6; GraphQL from the laptop also gives 0 |
+| Page GET, laptop control | laptop | ad counts per keyword identical to the VPS run |
+
+Then the pipeline's own harness, the same day: the `scraper-testing` workflow (`0q7jtSF7FG0cbyBe`) with Stage 0's node cloned verbatim, pointed at this service, and Stage 0's `Extract Dedupe And Filter` logic verbatim in `Measure FB Response`. Twelve keyword-and-country pairs from the live bank, ten productive and two exhausted.
+
+| Metric | This service | Apify, Stage 0's own telemetry over 12 runs |
+|---|---|---|
+| Request failures | 0 of 12 | 0 to 1 per 40-call run |
+| Ads per call | 14.2 (30 on the four most productive, 0 on both exhausted) | mean 10.6, range 3.75 to 29.5 |
+| Unique domains and pages | 56 and 87 from 170 ads | about 12 ads per advertiser at 120 ads a keyword |
+| `page_id`, `page_profile_uri`, `page_category`, `page_like_count` | 170 of 170 | same fields, same coverage |
+| `page_alias` | `""` on every ad | `""` from the actor too |
+| Domain source | caption 157, link_url 9, about_text 0, none 4 | caption on 119 of 120 in the run fb.md measured |
+| Ad-farm category filter | fired on 46 ads | |
+| Wall clock per call | 1.4 to 5.8 s; 45 s twice while the 4-a-minute limiter held the harness's burst | 300 s allowed |
+
+The two 45 s calls are the harness sending its 12 calls back to back; Stage 0 sends under one a minute and will not see that wait. What the run does not show is volume over days: about 60 page GETs in one day is the whole evidence that the VPS address is not throttled on the page, and `results_missing` and `blocked` on `/health` are what would move first if that changed.
+
 ## Layout
 
 | File | Role |
@@ -110,7 +142,6 @@ One Python process with no browser. Each in-flight search holds one page of up t
 | `src/facebook_ad_library/config.py` | environment variables, read once |
 | `src/facebook_ad_library/__init__.py` | the `facebook-ad-library` CLI (`serve`, `search`, `diag`) |
 | `tests/` | 94 tests against the saved fixtures; no network. `tests/fixtures/README.md` says how each fixture was cut from a live page and how to refresh it |
-| `docs/address-classification.md` | the measurements that led to this design |
 
 ## Configuration (environment variables)
 

@@ -12,7 +12,7 @@
 
 Self-hosted Meta Ad Library keyword search with an HTTP API: one page GET per search, no GraphQL, no browser.
 
-[Architecture](docs/architecture.md) · [API](docs/api.md) · [Deployment](docs/deployment.md) · [n8n test](docs/n8n-test-2026-09-19.md)
+[Architecture](docs/architecture.md) · [API](docs/api.md) · [Deployment](docs/deployment.md)
 
 </div>
 
@@ -39,7 +39,7 @@ uv run facebook-ad-library serve      # HTTP service on :8002
 
 Verify with `curl localhost:8002/health` (expects `"status":"ok"`); interactive API docs are at `/docs`.
 
-The service is driven over its HTTP API: one keyword and one country in, the first page of active ads the Ad Library shows for that search out (up to 30), in the Apify actor's request and response shape. It reads them from the search page itself, which Meta serves with the results embedded; it never calls the GraphQL endpoint, which Meta refuses from datacenter addresses ([why](docs/address-classification.md)). See [api.md](docs/api.md) for the endpoint, auth (`Authorization: Bearer`) and the error contract.
+The service is driven over its HTTP API: one keyword and one country in, the first page of active ads the Ad Library shows for that search out (up to 30), in the Apify actor's request and response shape. It reads them from the search page itself, which Meta serves with the results embedded; it never calls the GraphQL endpoint, which Meta refuses from datacenter addresses (see [architecture.md](docs/architecture.md#how-a-search-is-made)). See [api.md](docs/api.md) for the endpoint, auth (`Authorization: Bearer`) and the error contract.
 
 ## Configuration
 

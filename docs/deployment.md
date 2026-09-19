@@ -12,7 +12,7 @@ The same topology the two siblings run in.
 | Network | `n8n_default`, the network n8n's own Compose project created; declared external so this file never owns it |
 | Address from n8n | `http://facebook-ad-library:8002/facebook` |
 | Beside it | `trustpilot-reviews` on `8000` and `reddit-reviews` on `8001`, deployed the same way |
-| Proxy | none; `/health` reports `proxy: false`. The page GET this service makes is served to the VPS's own address without a throttle ([address-classification.md](address-classification.md)) |
+| Proxy | none; `/health` reports `proxy: false`. The page GET this service makes is served to the VPS's own address without a throttle (architecture.md, [Measured against Apify](architecture.md#measured-against-apify)) |
 
 Nothing is published to the host. Docker publishes straight past UFW, so even `8002:8002` behind the firewall would be public; the service is reachable only from containers on the network, and `API_TOKEN` still applies so a compromised container cannot drive it freely. The VPS already runs Traefik on 80/443 for n8n. There is no domain, no certificate and no reverse proxy for this service, and adding one would fail to bind.
 
@@ -39,37 +39,6 @@ docker compose up -d --build  # a few seconds: no browser to download
 
 If the network name is wrong the container refuses to start with `network n8n_default declared as external, but could not be found`; `docker network ls` gives the real one.
 
-## The check that decides whether the address works
-
-Run this from the VPS before anything is pointed at the service:
-
-```bash
-docker compose exec scraper uv run --no-sync facebook-ad-library diag --query "running shoes" --repeat 3
-```
-
-| Outcome | Meaning | Next |
-|---|---|---|
-| `GET 1: ads, 30 ads, …` on most of the three | the address is fine | run the volume check below |
-| every GET `miss` | Meta is skipping the server-side prefetch for this address right now; the fix, if it persists, is a higher `SSR_RETRIES`, not a proxy | re-run in a few minutes; watch `results_missing` on `/health` |
-| `GET 1: ScrapeBlocked …400` | the TLS fingerprint was rejected | check `FB_IMPERSONATE` is a current Chrome profile for the installed `curl_cffi` |
-| `GET 1: ScrapeBlocked …403 without a challenge` | the address itself is refused the page, which no address has been so far | that would be new; save the page with `--save-dir` and read it before changing anything |
-
-Then the volume check, twenty searches on one session pair at the production pace:
-
-```bash
-docker compose exec scraper uv run --no-sync facebook-ad-library search \
-  "acupressure mat for back pain" "running shoes" "pickleball paddle" "dandruff shampoo" "minimalist belt" \
-  "podcast recording headphones over ear" "on camera monitor field" "lavalier microphone wireless clip" \
-  "camera backpack photography travel" "rc crawler bead lock wheel" \
-  --country US --max 80 --repeat 2 --summary
-```
-
-Expect `failed: 0`, up to 30 ads on the productive keywords, `0` with `misses: 0` on the exhausted one, and `misses` of about a quarter of the GETs. Measured on the VPS on 19 Sep 2026 before this design was built: 41 consecutive page GETs from the VPS address, all `200`, no challenge after the first, no throttle. The numbers from the deployed service are recorded in the section below.
-
-## Measured on the VPS
-
-Deployed 19 Sep 2026 at commit `024d4c2`. The deploy check from the VPS: three GETs of `running shoes`, 30 ads and 16 advertisers each, one challenge, no misses, 1.1 MB pages. The `scraper-testing` run the same day ([n8n-test-2026-09-19.md](n8n-test-2026-09-19.md)): 12 calls from n8n over the Docker network, 0 failures, 170 ads, 1.4 to 5.8 s per call (45 s twice while the 4-a-minute limiter held the harness's burst), one page miss in 14 GETs retried once, `results_missing` 0. Container after the run: 63 MiB resident, 10 PIDs, 11 MB transferred for 14 GETs.
-
 ## Update, rollback, logs
 
 ```bash
@@ -89,13 +58,28 @@ docker exec facebook-ad-library python -c "import urllib.request;print(urllib.re
 
 ## Verifying a deploy
 
-1. Run a real search from the server:
+1. The deploy check, from the VPS, before anything is pointed at the service:
+   ```bash
+   docker compose exec scraper uv run --no-sync facebook-ad-library diag --query "running shoes" --repeat 3
+   ```
+
+   | Outcome | Meaning | Next |
+   |---|---|---|
+   | `GET 1: ads, 30 ads, …` on most of the three | the address is fine | step 2 |
+   | every GET `miss` | Meta is skipping the server-side prefetch for this address right now; the fix, if it persists, is a higher `SSR_RETRIES`, not a proxy | re-run in a few minutes; watch `results_missing` on `/health` |
+   | `GET 1: ScrapeBlocked …400` | the TLS fingerprint was rejected | check `FB_IMPERSONATE` is a current Chrome profile for the installed `curl_cffi` |
+   | `GET 1: ScrapeBlocked …403 without a challenge` | the address itself is refused the page, which no address has been so far | that would be new; save the page with `--save-dir` and read it before changing anything |
+
+   Measured on the first deploy, 19 Sep 2026, commit `024d4c2`: 30 ads and 16 advertisers on each of the three GETs, one challenge, no misses, 1.1 MB pages.
+2. A real search from the server:
    ```bash
    docker compose exec scraper uv run --no-sync facebook-ad-library search "running shoes" --country US --max 30 --summary
    ```
    Expect up to 30 ads from 10 or more advertisers in a few seconds; a second GET with `misses: 1` now and then is normal.
-2. `/health` should show `auth: true`, `max_concurrency: 2`, and after the first search `sessions.challenges: 1` and `sessions.calls` equal to the GETs made.
-3. Each successful call logs one line: `ok 'running shoes' US ads=30 attempts=1 misses=0 swaps=0 4.1s`. A retried one logs `page without results (1 of 3), retrying` before it.
+3. `/health` should show `auth: true`, `max_concurrency: 2`, and after the first search `sessions.challenges: 1` and `sessions.calls` equal to the GETs made.
+4. Each successful call logs one line: `ok 'running shoes' US ads=30 attempts=1 misses=0 swaps=0 4.1s`. A retried one logs `page without results (1 of 3), retrying` before it.
+
+Measured on the VPS after the `scraper-testing` run of 19 Sep 2026 (12 calls from n8n over the Docker network, 0 failures, 170 ads; the full comparison is in architecture.md, [Measured against Apify](architecture.md#measured-against-apify)): 1.4 to 5.8 s per call, one page miss in 14 GETs retried once, `results_missing` 0, 63 MiB resident, 10 PIDs, 11 MB transferred.
 
 ## Rotating credentials
 
@@ -103,7 +87,7 @@ docker exec facebook-ad-library python -c "import urllib.request;print(urllib.re
 
 ## Testing against the pipeline
 
-The production workflow is not edited. The service is exercised in the n8n workflow **`scraper-testing`** (`0q7jtSF7FG0cbyBe`) on the same instance, the way the Trustpilot and Reddit lanes there already do. `fb.md` describes the harness that exists there: a `Start FB Test` trigger, `FB Keyword List` with 12 keyword-country pairs, a disabled clone of Stage 0's Apify node, `Measure FB Response` with Stage 0's extraction verbatim, and `Collect FB Results`. The clone was pointed at this service on 19 Sep 2026 (URL, the `facebook-scraper` credential, no query parameters, enabled; body unchanged) and the run is reported in [n8n-test-2026-09-19.md](n8n-test-2026-09-19.md).
+The production workflow is not edited. The service is exercised in the n8n workflow **`scraper-testing`** (`0q7jtSF7FG0cbyBe`) on the same instance, the way the Trustpilot and Reddit lanes there already do. `fb.md` describes the harness that exists there: a `Start FB Test` trigger, `FB Keyword List` with 12 keyword-country pairs, a disabled clone of Stage 0's Apify node, `Measure FB Response` with Stage 0's extraction verbatim, and `Collect FB Results`. The clone was pointed at this service on 19 Sep 2026 (URL, the `facebook-scraper` credential, no query parameters, enabled; body unchanged); the run's numbers are in architecture.md under [Measured against Apify](architecture.md#measured-against-apify).
 
 ## What to watch
 

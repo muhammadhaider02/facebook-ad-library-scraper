@@ -6,7 +6,7 @@ stream (`RelayPrefetchedStreamCache`), which is exactly what the frontend's own 
 would have returned. This module reads that: one GET per keyword-and-country pair, no GraphQL.
 
 Why not GraphQL, which is what the frontend uses to scroll past the first page: measured
-2026-09-19 (docs/address-classification.md), Meta answers `POST /api/graphql/` from datacenter
+2026-09-19 (docs/architecture.md, "Measured against Apify"), Meta answers `POST /api/graphql/` from datacenter
 addresses with error 1675004 on the very first call of a fresh session, keyed on the source
 address, while the page GET is served to the same address without a throttle. A residential
 address gets both. The page carries up to 30 ads, which is also what three GraphQL pages gave.
