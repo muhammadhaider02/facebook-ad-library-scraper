@@ -1,0 +1,307 @@
+{
+ "data": {
+  "ad_library_main": {
+   "search_results_connection": {
+    "edges": [
+     {
+      "node": {
+       "collated_results": [
+        {
+         "ad_archive_id": "1529283351817213",
+         "collation_count": 2,
+         "collation_id": "4472280009721883",
+         "is_active": true,
+         "page_id": "775991435791863",
+         "page_is_deleted": false,
+         "snapshot": {
+          "branded_content": null,
+          "page_id": "775991435791863",
+          "page_is_deleted": false,
+          "page_profile_uri": "https://www.facebook.com/shaktimats/",
+          "root_reshared_post": null,
+          "byline": null,
+          "disclaimer_label": null,
+          "page_name": "Shakti Mat",
+          "page_profile_picture_url": "https://scontent.fisb13-1.fna.fbcdn.net/v/t39.35426-6/780985340_1964240247529343_3838052863430118261_n.jpg?stp=dst-jpg_s60x60_tt6&_nc_cat=100&_nc_map=urlgen_bucketless&ccb=1-7&_nc_sid=c53f8f&_nc_ohc=nMH9vJWbS04Q7kNvwH7nlFE&_nc_oc=Ado8gjk6cVqnMZNQEpsEq4phXcUAPYf0a7hUbHqle837JZSesmw8Y5tdovQcUsbnPSA&_nc_zt=14&_nc_ht=scontent.fisb13-1.fna&_nc_gid=tZivK3BbVvReMSmVzDf43w&_nc_ss=7b180&oh=00_AQIKN3W1lP4xzIQTchdLtnR8pv2GLUs-x9hjTyf7TV_27g&oe=6AB3AFD6",
+          "event": null,
+          "caption": "www.shaktimat.com",
+          "cta_text": "Shop now",
+          "cards": [],
+          "body": {
+           "text": "It looks uncomfortable, and that's kind of the point.\n\nThe Shakti Premium Acupressure Mat & Pillow uses thousands of precision-engineered spikes to stimulate key pressure points, helping release muscle tension, boost circulation and calm your nervous system.\n\nIt's intense at first… but the feeling afterwards is why millions keep coming back.\n\nTry it risk-free for 60 days and see for yourself."
+          },
+          "cta_type": "SHOP_NOW",
+          "display_format": "VIDEO",
+          "link_description": "Try risk-free for 60 days",
+          "link_url": "https://www.shaktimat.com/",
+          "images": [],
+          "page_categories": [
+           "Health/beauty"
+          ],
+          "page_like_count": 208850,
+          "title": "Weird but it works",
+          "videos": [
+           {
+            "video_hd_url": "https://video.fisb13-1.fna.fbcdn.net/o1/v/t2/f2/m366/AQMLSBK0hvD1lMyXF_N_eOaqw90n-CpPipGU7br3_fjijaldincp-ziCsvBQ8zmj4KhnFMKN0Vz0AJsr7ruwUlyK3CgAaceKf_hCJs7Wj26cMw.mp4?_nc_cat=111&_nc_oc=AdrmU0mo2N4PUR7mN6tW1F0hw0oDYehx6wiCap4CRmOavubIReESuO6mrdjYBg6qu5M&_nc_sid=b66105&_nc_ht=video.fisb13-1.fna.fbcdn.net&_nc_ohc=LH4c_sQkCagQ7kNvwFzdUER&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5WSV9VU0VDQVNFX1BST0RVQ1RfVFlQRS4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjEwNDU2MDg1MTgxMTk3MjksImFzc2V0X2FnZV9kYXlzIjo1MCwidmlfdXNlY2FzZV9pZCI6MTA3OTksImR1cmF0aW9uX3MiOjc3LCJ1cmxnZW5fc291cmNlIjoid3d3In0%3D&ccb=17-1&vs=bea05cb909d49ffe&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC9CQzQ2MzhDNkRFNTc4RjQyQjlCOEIwNDRFREMwOTRCMF9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50LzM1NDI1MTQ5MkU5NkM4MzgwMDY2NjNDQTA4MkYwN0IwX2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACbixN_Etr7bAxUCKAJDMywXQFNszMzMzM0YGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUAZd6oAQA&_nc_gid=tZivK3BbVvReMSmVzDf43w&_nc_ss=7b180&_nc_map=urlgen_bucketless&_nc_zt=28&oh=00_AQKY_C0C64gTorFAfV6-oxerW9FmmMho7Mp3JeDEXj4tFA&oe=6AB39475",
+            "video_preview_image_url": "https://scontent.fisb13-1.fna.fbcdn.net/v/t39.35426-6/783220463_1469241788559424_6984014364545004675_n.jpg?_nc_cat=100&_nc_map=urlgen_bucketless&ccb=1-7&_nc_sid=c53f8f&_nc_ohc=S_e8pc1L_p0Q7kNvwHF9P4t&_nc_oc=AdopdaDNshisrUJvnEr0DL--E_LDKkldMQ0pXDwjnZwh40g6tyZZPbw7XH-4VFAawU8&_nc_zt=14&_nc_ht=scontent.fisb13-1.fna&_nc_gid=tZivK3BbVvReMSmVzDf43w&_nc_ss=7b180&oh=00_AQJ-HvW3tthTy9g5B344LzQ8iVrmniERAQYjPJIXvVb-_w&oe=6AB3BC79",
+            "video_sd_url": "https://video.fisb13-1.fna.fbcdn.net/o1/v/t2/f2/m412/AQNHk7mc1lHYyTBfmvX8raauEf6yflp6PeBmV4wmIbnlBvWKkpyIGTOueNdSfAUxhiaG3rrghNEMUHtk_sDyH-ushyZZaPc93ywnxr4Bcg.mp4?_nc_cat=106&_nc_oc=AdqTQOzcBVeM11AuDUDGzZY0nkShYch8WvwnrOgy-SOCL95NgbGGyajNnpvIaZCBAHU&_nc_sid=ef5aa3&_nc_ht=video.fisb13-1.fna.fbcdn.net&_nc_ohc=oSH2MQSsBfEQ7kNvwHLv_2U&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5WSV9VU0VDQVNFX1BST0RVQ1RfVFlQRS4uQzMuMzYwLnN2ZV9zZCIsInhwdl9hc3NldF9pZCI6MTA0NTYwODUxODExOTcyOSwiYXNzZXRfYWdlX2RheXMiOjUwLCJ2aV91c2VjYXNlX2lkIjoxMDc5OSwiZHVyYXRpb25fcyI6NzcsInVybGdlbl9zb3VyY2UiOiJ3d3cifQ%3D%3D&ccb=17-1&_nc_gid=tZivK3BbVvReMSmVzDf43w&_nc_ss=7b180&_nc_map=urlgen_bucketless&_nc_zt=28&oh=00_AQLNZuLwIWOlyicCoYsgUav0vTaBXn0S2ZwfcAbFinAlVg&oe=6AB3BB44",
+            "watermarked_video_hd_url": null,
+            "watermarked_video_sd_url": null
+           }
+          ],
+          "is_reshared": false,
+          "extra_links": [],
+          "extra_texts": [],
+          "extra_images": [],
+          "extra_videos": [],
+          "country_iso_code": null,
+          "brazil_tax_id": null,
+          "additional_info": null,
+          "ec_certificates": []
+         },
+         "has_user_reported": false,
+         "report_count": null,
+         "menu_items": [],
+         "state_media_run_label": null,
+         "page_name": "Shakti Mat",
+         "impressions_with_index": {
+          "impressions_text": null,
+          "impressions_index": -1
+         },
+         "gated_type": "ELIGIBLE",
+         "categories": [
+          "UNKNOWN"
+         ],
+         "is_aaa_eligible": false,
+         "contains_digital_created_media": false,
+         "reach_estimate": null,
+         "currency": "",
+         "spend": null,
+         "end_date": 1789714800,
+         "publisher_platform": [
+          "FACEBOOK",
+          "INSTAGRAM",
+          "AUDIENCE_NETWORK",
+          "MESSENGER",
+          "THREADS"
+         ],
+         "start_date": 1787295600,
+         "contains_sensitive_content": false,
+         "total_active_time": null,
+         "regional_regulation_data": {
+          "finserv": {
+           "is_deemed_finserv": false,
+           "is_limited_delivery": false
+          },
+          "tw_anti_scam": {
+           "is_limited_delivery": false
+          }
+         },
+         "hide_data_status": "NONE",
+         "fev_info": null,
+         "ad_id": null,
+         "targeted_or_reached_countries": []
+        },
+        {
+         "ad_archive_id": "1476710344230026",
+         "collation_count": 1,
+         "collation_id": "3197615557088258",
+         "is_active": true,
+         "page_id": "775991435791863",
+         "page_is_deleted": false,
+         "snapshot": {
+          "branded_content": null,
+          "page_id": "775991435791863",
+          "page_is_deleted": false,
+          "page_profile_uri": "https://www.facebook.com/shaktimats/",
+          "root_reshared_post": null,
+          "byline": null,
+          "disclaimer_label": null,
+          "page_name": "Shakti Mat",
+          "page_profile_picture_url": "https://scontent.fisb13-1.fna.fbcdn.net/v/t39.35426-6/739199571_1239754364824142_889284406297203555_n.jpg?stp=dst-jpg_s60x60_tt6&_nc_cat=104&_nc_map=urlgen_bucketless&ccb=1-7&_nc_sid=c53f8f&_nc_ohc=NR7lxypwiQIQ7kNvwFF2wCA&_nc_oc=Adq_lY_jOolX2YCLOnXRVmOcUQ0oBWmq-Cn4dRtSGNlCZ5N1jdaU3_ILo_4h7bih63s&_nc_zt=14&_nc_ht=scontent.fisb13-1.fna&_nc_gid=tZivK3BbVvReMSmVzDf43w&_nc_ss=7b180&oh=00_AQKIzsN_hVCnREJC5GR474MPFzGEWg5VnDYYHrIRvANKJQ&oe=6AB3A5FB",
+          "event": null,
+          "caption": "www.shaktimat.com",
+          "cta_text": "Shop now",
+          "cards": [],
+          "body": {
+           "text": "You can’t keep building the life you want if your body’s barely holding together.\n\nThe Shakti Premium Acupressure Mat & Pillow gives your body the recovery it needs: 20 minutes of deep pressure that helps release muscle tension, boost circulation, and gets you back on the tools faster. \n\nTry it risk-free for 60 days and stop accepting pain as part of the job."
+          },
+          "cta_type": "SHOP_NOW",
+          "display_format": "VIDEO",
+          "link_description": "Reset with Premium Acupressure",
+          "link_url": "https://www.shaktimat.com/",
+          "images": [],
+          "page_categories": [
+           "Health/beauty"
+          ],
+          "page_like_count": 208850,
+          "title": "Recovery done right",
+          "videos": [
+           {
+            "video_hd_url": "https://video.fisb13-1.fna.fbcdn.net/o1/v/t2/f2/m366/AQNkts9C3WXcLagQTiahzmHMB4yVAKSliyW-07_D-NUaVszGTqerZNOySePs-X6Fv6Kk_PARhOmUvabVhg7LdaO5YvD32l05YgnK3jrWsAFOyw.mp4?_nc_cat=103&_nc_oc=AdpJqV3A_8OXcWwGXzumQeXxZM6rz5h0V9vwnGi3g8IHFFYy2qkdGS_rFWa7zUPUbH4&_nc_sid=b66105&_nc_ht=video.fisb13-1.fna.fbcdn.net&_nc_ohc=84Vpz6Xr17EQ7kNvwGgSmr_&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5WSV9VU0VDQVNFX1BST0RVQ1RfVFlQRS4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjEwMTgzOTkwNDA4NTkxODYsImFzc2V0X2FnZV9kYXlzIjoxMTksInZpX3VzZWNhc2VfaWQiOjEwNzk5LCJkdXJhdGlvbl9zIjoyOCwidXJsZ2VuX3NvdXJjZSI6Ind3dyJ9&ccb=17-1&vs=8bfb59f204e0532d&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC9BNzQzRThCMTJFMzNBMjQzQTQ0RDhBMkJDQzlGOURCOV9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50LzhCNDgwQ0JDQzM0MTUxMzZCQjU5M0E2MUMyQUNENjg0X2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACbksI-R0I7PAxUCKAJDMywXQDz3S8an754YGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUAZd6oAQA&_nc_gid=tZivK3BbVvReMSmVzDf43w&_nc_ss=7b180&_nc_map=urlgen_bucketless&_nc_zt=28&oh=00_AQIA_AuN0xyFuym4_MEEVczBcENVKvLgAmuOp6eQYu9SMg&oe=6AB3967D",
+            "video_preview_image_url": "https://scontent.fisb13-1.fna.fbcdn.net/v/t39.35426-6/739106760_2068540037421998_8528101355101142524_n.jpg?_nc_cat=103&_nc_map=urlgen_bucketless&ccb=1-7&_nc_sid=c53f8f&_nc_ohc=ipCOzRCsGkMQ7kNvwH8hrMB&_nc_oc=AdoCREHbVpzlTDdj8pUtuHWC-mntDgR9ClDBBgbzRKNarT-O08lGOFHANd_tphhBGfw&_nc_zt=14&_nc_ht=scontent.fisb13-1.fna&_nc_gid=tZivK3BbVvReMSmVzDf43w&_nc_ss=7b180&oh=00_AQLa36JmOkBvsIrnzZWBvqawVO79NvHpHqT4Gj0e5xptXg&oe=6AB3A49C",
+            "video_sd_url": "https://video.fisb13-1.fna.fbcdn.net/o1/v/t2/f2/m412/AQNmttDI3taGKLK07majigELpaIvHm04yirZSo3uCzI7qf878rsbX2BeCiuKRXGh1GhCF6RIjUZSeaXYJt2pQxkIK1mIiT9HZzvF2h8ylg.mp4?_nc_cat=105&_nc_oc=AdrTYAyKMuTROu3ScEvcXApyMHOdeHuoe6L02GffA1fw0tT0U9Pxyh7OWTRj3j1AnEI&_nc_sid=ef5aa3&_nc_ht=video.fisb13-1.fna.fbcdn.net&_nc_ohc=jvKgUdF4CJwQ7kNvwF8qCOX&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5WSV9VU0VDQVNFX1BST0RVQ1RfVFlQRS4uQzMuMzYwLnN2ZV9zZCIsInhwdl9hc3NldF9pZCI6MTAxODM5OTA0MDg1OTE4NiwiYXNzZXRfYWdlX2RheXMiOjExOSwidmlfdXNlY2FzZV9pZCI6MTA3OTksImR1cmF0aW9uX3MiOjI4LCJ1cmxnZW5fc291cmNlIjoid3d3In0%3D&ccb=17-1&_nc_gid=tZivK3BbVvReMSmVzDf43w&_nc_ss=7b180&_nc_map=urlgen_bucketless&_nc_zt=28&oh=00_AQIXawwyxPxZQ7YWie_2OW_B1tpuqXa-OT4YZi4swgWoSQ&oe=6AB3BD8D",
+            "watermarked_video_hd_url": null,
+            "watermarked_video_sd_url": null
+           }
+          ],
+          "is_reshared": false,
+          "extra_links": [],
+          "extra_texts": [],
+          "extra_images": [],
+          "extra_videos": [],
+          "country_iso_code": null,
+          "brazil_tax_id": null,
+          "additional_info": null,
+          "ec_certificates": []
+         },
+         "has_user_reported": false,
+         "report_count": null,
+         "menu_items": [],
+         "state_media_run_label": null,
+         "page_name": "Shakti Mat",
+         "impressions_with_index": {
+          "impressions_text": "<100",
+          "impressions_index": 0
+         },
+         "gated_type": "ELIGIBLE",
+         "categories": [
+          "UNKNOWN"
+         ],
+         "is_aaa_eligible": false,
+         "contains_digital_created_media": false,
+         "reach_estimate": null,
+         "currency": "",
+         "spend": null,
+         "end_date": 1789714800,
+         "publisher_platform": [
+          "FACEBOOK",
+          "INSTAGRAM",
+          "AUDIENCE_NETWORK",
+          "MESSENGER",
+          "THREADS"
+         ],
+         "start_date": 1783234800,
+         "contains_sensitive_content": false,
+         "total_active_time": null,
+         "regional_regulation_data": {
+          "finserv": {
+           "is_deemed_finserv": false,
+           "is_limited_delivery": false
+          },
+          "tw_anti_scam": {
+           "is_limited_delivery": false
+          }
+         },
+         "hide_data_status": "NONE",
+         "fev_info": null,
+         "ad_id": null,
+         "targeted_or_reached_countries": []
+        },
+        {
+         "ad_archive_id": "1091921653311873",
+         "collation_count": 1,
+         "collation_id": "4284533325170639",
+         "is_active": true,
+         "page_id": "775991435791863",
+         "page_is_deleted": false,
+         "snapshot": {
+          "branded_content": null,
+          "page_id": "775991435791863",
+          "page_is_deleted": false,
+          "page_profile_uri": "https://www.facebook.com/shaktimats/",
+          "root_reshared_post": null,
+          "byline": null,
+          "disclaimer_label": null,
+          "page_name": "Shakti Mat",
+          "page_profile_picture_url": "https://scontent.fisb13-1.fna.fbcdn.net/v/t39.35426-6/813825493_1569518214923661_8446311625592385585_n.jpg?stp=dst-jpg_s60x60_tt6&_nc_cat=106&_nc_map=urlgen_bucketless&ccb=1-7&_nc_sid=c53f8f&_nc_ohc=OcTYswn6SvgQ7kNvwHsRR4X&_nc_oc=AdpnF2PQdtPZZoyDcSijQuqgmh-uwcSY3vsBuPyNnjQxS7ja1Vfmq4BqI8y_exSitEI&_nc_zt=14&_nc_ht=scontent.fisb13-1.fna&_nc_gid=tZivK3BbVvReMSmVzDf43w&_nc_ss=7b180&oh=00_AQImQdqam2D3THXGnT0cUZF8qIIE1Tzrj4OS86sbMWE4Kw&oe=6AB3965C",
+          "event": null,
+          "caption": "SHAKTIMAT.COM",
+          "cta_text": "Shop now",
+          "cards": [],
+          "body": {
+           "text": "The thing is, pressure, and only pressure, is what releases muscle tension.\n\nIt’s weird, but it works.\n\nTry it risk-free for 60 days. All you have to lose is feeling tired, sore and stressed…"
+          },
+          "cta_type": "SHOP_NOW",
+          "display_format": "VIDEO",
+          "link_description": "Lie down and let go…",
+          "link_url": "https://www.shaktimat.com/",
+          "images": [],
+          "page_categories": [
+           "Health/beauty"
+          ],
+          "page_like_count": 208850,
+          "title": "Premium Acupressure Mat",
+          "videos": [
+           {
+            "video_hd_url": "https://video.fisb13-1.fna.fbcdn.net/o1/v/t2/f2/m366/AQOu3ugDXS_dGK8LghyTid1qBKvw2k70ujK8W_dJEdd0GNTVjqrwUjiE54rh2ZMDC4-_tj5OOCGYbJP0_EGfWle0EDm7QmCODRIKyssEjUG2Mg.mp4?_nc_cat=105&_nc_oc=AdpV3gO8jPV-cxZtiTf_Az7F0X1uuGi545CZAh7L8fsCUvtpPFzLLN2xudVkImNHCzk&_nc_sid=b66105&_nc_ht=video.fisb13-1.fna.fbcdn.net&_nc_ohc=HIKWdAVCVWoQ7kNvwH3vlLv&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5WSV9VU0VDQVNFX1BST0RVQ1RfVFlQRS4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjE1ODE4MDI4OTM2ODY1OTMsImFzc2V0X2FnZV9kYXlzIjoxNSwidmlfdXNlY2FzZV9pZCI6MTA3OTksImR1cmF0aW9uX3MiOjYyLCJ1cmxnZW5fc291cmNlIjoid3d3In0%3D&ccb=17-1&vs=d01d70e8eba21b5e&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC9DNDQ2OEQxNEEyQzIwNzVGMjRDMjY4MUU2REI2RTI5MV9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50LzVBNDBEMjNCOUQ5QUZDNTVDMjA3NEE2NkM0OERBRTgwX2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACaC3an5hanPBRUCKAJDMywXQE8VP3ztkWgYGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUAZd6oAQA&_nc_gid=tZivK3BbVvReMSmVzDf43w&_nc_ss=7b180&_nc_map=urlgen_bucketless&_nc_zt=28&oh=00_AQKuOwhEak3vdm7NAj1d9f-djy_MvEVag43YA764aR3wdA&oe=6AB3B587",
+            "video_preview_image_url": "https://scontent.fisb13-1.fna.fbcdn.net/v/t39.35426-6/799601802_2964757787197303_2119055007557412864_n.jpg?_nc_cat=100&_nc_map=urlgen_bucketless&ccb=1-7&_nc_sid=c53f8f&_nc_ohc=EBefe4uEfmQQ7kNvwEnrMBY&_nc_oc=AdouC3NnmOqvgKvbFU2Yhu3lilUKyAGmsgjdveIJ1bYK3LUHUIKf_5Mn0H5gkPf3yII&_nc_zt=14&_nc_ht=scontent.fisb13-1.fna&_nc_gid=tZivK3BbVvReMSmVzDf43w&_nc_ss=7b180&oh=00_AQK8cjj0sILlDL25kk6uS6MLpsF6Ow8bjKwcCqC8e08rwQ&oe=6AB3B9DC",
+            "video_sd_url": "https://video.fisb13-1.fna.fbcdn.net/o1/v/t2/f2/m412/AQNNGMcvXWT5DzX_sSA8tZAtKj3gb0q8fu-4Ovhopxm14BalOLE8fPBCoF0H3F-3c3p-ENgK9eYQ9-tiL8fVQ_Xv25ZKnFvBm9_s85pTJA.mp4?_nc_cat=111&_nc_oc=Ado5XWZflDdqtA96jYDgIZ9MN9F3moa55ax1x_rF8_Dvn8H8UOKicz1x1BqJ1Htl5Xk&_nc_sid=ef5aa3&_nc_ht=video.fisb13-1.fna.fbcdn.net&_nc_ohc=W8swDs7eeQYQ7kNvwGQq5ym&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5WSV9VU0VDQVNFX1BST0RVQ1RfVFlQRS4uQzMuMzYwLnN2ZV9zZCIsInhwdl9hc3NldF9pZCI6MTU4MTgwMjg5MzY4NjU5MywiYXNzZXRfYWdlX2RheXMiOjE1LCJ2aV91c2VjYXNlX2lkIjoxMDc5OSwiZHVyYXRpb25fcyI6NjIsInVybGdlbl9zb3VyY2UiOiJ3d3cifQ%3D%3D&ccb=17-1&_nc_gid=tZivK3BbVvReMSmVzDf43w&_nc_ss=7b180&_nc_map=urlgen_bucketless&_nc_zt=28&oh=00_AQLmY5LYGkjy-AvoJKISMT8hmAr3f-JzzVGAge9WvcbjJA&oe=6AB3B02B",
+            "watermarked_video_hd_url": null,
+            "watermarked_video_sd_url": null
+           }
+          ],
+          "is_reshared": false,
+          "extra_links": [],
+          "extra_texts": [],
+          "extra_images": [],
+          "extra_videos": [],
+          "country_iso_code": null,
+          "brazil_tax_id": null,
+          "additional_info": null,
+          "ec_certificates": []
+         },
+         "has_user_reported": false,
+         "report_count": null,
+         "menu_items": [],
+         "state_media_run_label": null,
+         "page_name": "Shakti Mat",
+         "impressions_with_index": {
+          "impressions_text": null,
+          "impressions_index": -1
+         },
+         "gated_type": "ELIGIBLE",
+         "categories": [
+          "UNKNOWN"
+         ],
+         "is_aaa_eligible": false,
+         "contains_digital_created_media": false,
+         "reach_estimate": null,
+         "currency": "",
+         "spend": null,
+         "end_date": 1789714800,
+         "publisher_platform": [
+          "FACEBOOK",
+          "INSTAGRAM",
+          "AUDIENCE_NETWORK",
+          "MESSENGER"
+         ],
+         "start_date": 1789542000,
+         "contains_sensitive_content": false,
+         "total_active_time": null,
+         "regional_regulation_data": {
+          "finserv": {
+           "is_deemed_finserv": false,
+           "is_limited_delivery": false
+          },
+          "tw_anti_scam": {
+           "is_limited_delivery": false
+          }
+         },
+         "hide_data_status": "NONE",
+         "fev_info": null,
+         "ad_id": null,
+         "targeted_or_reached_countries": []
+        }
+       ]
+      }
+     }
+    ],
+    "page_info": {
+     "end_cursor": null,
+     "has_next_page": false
+    }
+   }
+  }
+ }
+}
