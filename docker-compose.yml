@@ -30,8 +30,12 @@ services:
     memswap_limit: 512m
     mem_reservation: 128m
 
-    # No `init`, `pids_limit` or `shm_size` here: those exist in the siblings for Chromium's
-    # process trees and shared memory, and this image has no browser.
+    # init reaps anything uvicorn's worker leaves behind on a hard stop; pids_limit is a fork
+    # guard, not a working budget: 9 PIDs measured while serving a search, so 128 is generous
+    # and still far below the siblings' 1024, which exists for Chromium's thread trees.
+    # No shm_size: that too is a browser concern and this image has none.
+    init: true
+    pids_limit: 128
 
     # Docker's default is 10s, which SIGKILLs every in-flight search on redeploy: uvicorn stops
     # accepting and waits for the handler, and that handler may legitimately run for

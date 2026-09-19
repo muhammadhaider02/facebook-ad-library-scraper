@@ -24,7 +24,7 @@ Nothing is published to the host. Docker publishes straight past UFW, so even `8
 | `mem_reservation` | 128m | soft limit, enforced only when the host is short of memory |
 | `stop_grace_period` | 250s | `SCRAPE_BUDGET_S` plus slack, so a redeploy never kills an in-flight search |
 | logging | json-file, 10m × 3 | one line per search plus one per session mint; bounded anyway |
-| `init`, `pids_limit`, `shm_size` | not set | those exist in the siblings for Chromium's process trees and shared memory; this image has no browser |
+| `init`, `pids_limit` | true / 128 | the box's convention; 9 PIDs measured while serving a search, so 128 is a fork guard, not a budget. No `shm_size`: that exists in the siblings for Chromium and this image has no browser |
 
 `RATE_LIMIT_PER_MIN` is what shapes the traffic Meta sees from the address; `MAX_CONCURRENCY` only bounds searches in flight. Raise the page cap and the limiter together, never one alone.
 
