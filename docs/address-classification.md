@@ -4,7 +4,7 @@ Measured 19 Sep 2026, 08:45 to 09:05 UTC, on commit `ba3ef30`. Every request bod
 
 ## The answer
 
-**One bootstrap GET per keyword-country pair, no GraphQL.** The Ad Library page Meta serves to the VPS already contains the first 30 ads of the search as server-rendered JSON, with every field Stage 0 reads. That GET is not throttled from the VPS: 41 of them in a row at 3 to 4 s spacing, all `200`, no challenge, no `1675004`. The GraphQL endpoint, which is what the service currently paginates with, is refused from every address the VPS has, with any session, and does not recover with time. The service has to be changed from "GET once, then GraphQL three times" to "GET once, read the page". That is a code change in this repo; it is not built yet.
+**One bootstrap GET per keyword-country pair, no GraphQL.** The Ad Library page Meta serves to the VPS already contains the first 30 ads of the search as server-rendered JSON, with every field Stage 0 reads. That GET is not throttled from the VPS: 41 of them in a row at 3 to 4 s spacing, all `200`, no challenge, no `1675004`. The GraphQL endpoint, which is what the service currently paginates with, is refused from every address the VPS has, with any session, fresh or after 10 minutes idle. The service has to be changed from "GET once, then GraphQL three times" to "GET once, read the page". That is a code change in this repo; it is not built yet.
 
 ## Results
 
@@ -27,7 +27,7 @@ Measured 19 Sep 2026, 08:45 to 09:05 UTC, on commit `ba3ef30`. Every request bod
 
 ## What each test established
 
-**Session versus address (1, 1b, 4a-c).** A jar minted on the laptop is refused on the VPS at call one; the same jar keeps working on the laptop. A jar minted on the VPS is refused at call one and is still refused after 10 minutes idle. The refusal takes 30 to 70 ms, which is an edge decision, not a backend one. `1675004` is keyed on the source address, checked on every GraphQL call, and the bucket for this address is empty before we send anything.
+**Session versus address (1, 1b, 4a).** A jar minted on the laptop is refused on the VPS at call one; the same jar keeps working on the laptop. A jar minted on the VPS is refused at call one and is still refused after 10 minutes idle. The refusal takes 30 to 70 ms, which is an edge decision, not a backend one. `1675004` is keyed on the source address, checked on every GraphQL call, and the bucket for this address is empty before we send anything.
 
 **IPv6 (2, 2b).** The v6 address is a working, separate path to Facebook and gets exactly the same refusal, so the key is at least as wide as Hostinger's allocation, not the single v4 address. Rotating inside the /64 is not possible on this VPS: only `::1` is routed.
 
