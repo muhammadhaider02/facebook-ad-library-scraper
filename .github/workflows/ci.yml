@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install 3.11
+      - run: uv sync --frozen
+      - run: uv run pytest -q
+
+  docker-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Minted per run rather than written down. The container that trusts it is built and
+      # destroyed inside this job, so there is nothing to store and nothing to rotate.
+      - name: Mint a throwaway token for this run
+        run: echo "API_TOKEN=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+
+      - name: Build image
+        run: docker build -t facebook-ad-library:ci .
+
+      - name: Start container
+        run: |
+          docker run -d --name scraper -p 8002:8002 -e API_TOKEN="$API_TOKEN" facebook-ad-library:ci
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8002/health && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:8002/health
+
+      - name: Auth is enforced
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8002/facebook \
+            -H 'Content-Type: application/json' -d '{"query":"running shoes","country":"US"}')
+          test "$code" = "401"
+
+      - name: Missing query is a 400
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8002/facebook \
+            -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' -d '{"country":"NZ"}')
+          test "$code" = "400"
+
+      # Stage 0's body, verbatim. A GitHub runner IP may be refused by Meta, so a 503 with one of
+      # our own error types is an accepted outcome; anything else fails the job.
+      - name: Live search through the container
+        run: |
+          curl -s --max-time 280 -o out.json -w 'status=%{http_code} secs=%{time_total}\n' \
+            -X POST http://127.0.0.1:8002/facebook \
+            -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
+            -d '{"maxItems":80,"query":"acupressure mat for back pain","country":"NZ","category":"all","mediaType":"all","activeStatus":"active","advertisers":[],"fetchDetails":true}' | tee status.txt
+          python3 -c "
+          import json, re
+          status = re.search(r'status=(\d+)', open('status.txt').read()).group(1)
+          d = json.load(open('out.json'))
+          if status == '200':
+              assert isinstance(d, list), d
+              if d:
+                  assert d[0]['page_name'] and 'caption' in d[0]['snapshot'], d[0]
+              print(f'200: {len(d)} ads, {len({r[\"page_id\"] for r in d})} advertisers')
+          elif status == '503':
+              assert d['error']['type'] in ('ScrapeBlocked', 'RateLimited', 'DocIdStale', 'ScrapeFailed'), d
+              print('503 from a runner IP:', d['error']['type'], d['error']['message'][:120])
+          else:
+              raise SystemExit(f'unexpected status {status}: {d}')
+          "
+
+      - name: Container logs
+        if: always()
+        run: docker logs scraper
