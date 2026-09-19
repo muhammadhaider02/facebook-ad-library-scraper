@@ -12,7 +12,7 @@
 
 Self-hosted Meta Ad Library keyword search with an HTTP API: one page GET per search, no GraphQL, no browser.
 
-[Architecture](docs/architecture.md) · [API](docs/api.md) · [Deployment](docs/deployment.md)
+[Architecture](docs/architecture.md) · [API](docs/api.md) · [Deployment](docs/deployment.md) · [n8n test](docs/n8n-test-2026-09-19.md)
 
 </div>
 

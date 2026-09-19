@@ -13,7 +13,7 @@ One endpoint that answers the body Stage 0 sends to Apify once per keyword-and-c
 | Failure | non-`2xx` from Apify, or items carrying `error` | an HTTP status with one `{"error": {...}}` object |
 | Node timeout | 300 s | unchanged; `SCRAPE_BUDGET_S` sits under it |
 
-Stage 0's node has not been repointed and this contract has not yet been exercised from n8n; it has been exercised with the verbatim body over HTTP, locally and in CI.
+Stage 0's node has not been repointed. The contract has been exercised from n8n in `scraper-testing` with Stage 0's node cloned verbatim and Stage 0's extraction verbatim: 12 calls, 0 failures, every field read downstream present on every ad ([n8n-test-2026-09-19.md](n8n-test-2026-09-19.md)).
 
 ### The search call
 

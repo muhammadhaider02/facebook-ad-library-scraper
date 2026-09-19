@@ -68,7 +68,7 @@ Expect `failed: 0`, up to 30 ads on the productive keywords, `0` with `misses: 0
 
 ## Measured on the VPS
 
-_Filled in after the first deploy of this design; see the commit that added this line._
+Deployed 19 Sep 2026 at commit `024d4c2`. The deploy check from the VPS: three GETs of `running shoes`, 30 ads and 16 advertisers each, one challenge, no misses, 1.1 MB pages. The `scraper-testing` run the same day ([n8n-test-2026-09-19.md](n8n-test-2026-09-19.md)): 12 calls from n8n over the Docker network, 0 failures, 170 ads, 1.4 to 5.8 s per call (45 s twice while the 4-a-minute limiter held the harness's burst), one page miss in 14 GETs retried once, `results_missing` 0. Container after the run: 63 MiB resident, 10 PIDs, 11 MB transferred for 14 GETs.
 
 ## Update, rollback, logs
 
