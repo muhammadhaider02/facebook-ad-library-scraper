@@ -1,0 +1,270 @@
+"""One brand's ads from the Ad Library, the way the Adyntel API answered: a page id, a page URL
+or a domain in; the page's total ad count and its first page of ads out.
+
+How a lookup is made (docs/architecture.md, "How a brand lookup is made"):
+  1. resolve the page id, unless it was given
+       facebook_url   /p/<Name>-<id>/ and friends carry the id; a vanity handle goes to the public
+                      page plugin (one ~45 KB GET, no challenge), then optionally the profile page
+       company_domain a keyword search on the bare domain, every country, every status; the page
+                      with the most ads landing on the brand's registrable domain is the brand
+  2. GET the page view (`view_all_page_id`) with the requested status and media filter; its
+     embedded blob carries the total count and up to 30 ads, sorted by lifetime impressions
+Every GET is priced against a budget sized for the n8n Code nodes that call this (30 s), and a
+lookup that cannot make its next GET in time answers a 503 instead of running past the caller.
+
+Three outcomes, kept apart on purpose because the workflows route on them:
+  found      the page exists; `count` may be 0
+  not found  no page for the input (an unknown id, a handle the plugin does not know, a domain
+             with no ad landing on it); `BrandResult.found` is False, and the API answers `{}`
+  error      a FacebookError; the API answers 503
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Callable
+
+from . import scraper as wire
+from .config import settings
+from .scraper import (
+    BudgetExceeded,
+    Page,
+    PageView,
+    RateLimited,
+    ResultsMissing,
+    ScrapeBlocked,
+    ScrapeFailed,
+    SessionDead,
+)
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .session import Resp, _Lease, _SessionPool
+
+log = logging.getLogger(__name__)
+
+RESOLVERS = ("page_id", "facebook_url", "company_domain")
+
+
+@dataclass
+class BrandResult:
+    resolver: str
+    query: str  # the id, URL or domain as given
+    active_status: str
+    media_type: str
+    found: bool = False
+    page_id: str | None = None
+    count: int = 0
+    ads: list[dict] | None = None
+    info: dict | None = None
+    note: str = ""  # why not found
+    attempts: int = 0  # Ad Library page GETs that answered with the page
+    misses: int = 0  # of those, pages without the results blob
+    plain_gets: int = 0  # plugin and profile GETs
+    queue_s: float = 0.0  # time spent waiting for a concurrency slot
+    seconds: float = 0.0
+    session_swaps: int = 0
+
+    @property
+    def page_name(self) -> str | None:
+        return (self.info or {}).get("page_name")
+
+
+def lookup_cost_s() -> float:
+    """What one more GET is expected to take, without the limiter's wait, which is asked for
+    separately: the pacing gap plus a page's typical fetch and parse with slack."""
+    return settings.spacing_max_s + 5.0
+
+
+class _Run:
+    """The state of one lookup: its lease, its deadline and the recovery ladder every GET shares."""
+
+    def __init__(self, lease: "_Lease", deadline: float, result: BrandResult) -> None:
+        self.lease = lease
+        self.deadline = deadline
+        self.result = result
+        self.gets = 0
+
+    def _guard(self, what: str) -> None:
+        """Refuse a GET that could not finish in time. The first GET is never refused: the caller
+        came for an answer, and a slow first page is still an answer."""
+        if not self.gets:
+            return
+        remaining = self.deadline - time.time()
+        need = self.lease.session.limiter.eta() + lookup_cost_s()
+        if remaining < need:
+            raise BudgetExceeded(f"no budget left for the {what} ({remaining:.0f}s left, {need:.0f}s needed) after {self.gets} GET(s)")
+
+    def _recover(self, e: Exception, what: str) -> None:
+        """Retire the session and swap once; a second refusal escapes. No sleeping on a 429: the
+        budget is 25 s and the nap is 60."""
+        session = self.lease.session
+        reason = "rate_limited" if isinstance(e, RateLimited) else "session_dead" if isinstance(e, SessionDead) else "failed"
+        session.retire(reason)
+        if self.lease.swaps or self.deadline - time.time() < lookup_cost_s():
+            if isinstance(e, SessionDead):
+                raise ScrapeBlocked(f"two fresh sessions were refused in a row on the {what}: {e}") from e
+            raise e
+        log.warning("%s: %s on %s; swapping sessions", what, type(e).__name__, session.label)
+        self.lease.replace()
+        self.result.session_swaps = self.lease.swaps
+
+    def page(self, url: str, what: str) -> tuple[Page, PageView, str]:
+        """One Ad Library page, with the miss retries and the swap."""
+        misses = 0
+        while True:
+            self._guard(what)
+            try:
+                kind, _, html = self.lease.session.fetch_url(url, self.deadline)
+            except (RateLimited, SessionDead, ScrapeFailed) as e:
+                self._recover(e, what)
+                continue
+            self.gets += 1
+            self.result.attempts += 1
+            if kind is Page.MISS:
+                misses += 1
+                self.result.misses += 1
+                if misses > settings.brand_ssr_retries:
+                    raise ResultsMissing(f"the {what} came without results {misses} time(s) in a row")
+                log.info("%s: page without results (%d of %d), retrying", what, misses, settings.brand_ssr_retries + 1)
+                continue
+            _, view = wire.classify_page_view(html)
+            return kind, view, html
+
+    def plain(self, url: str, what: str) -> "Resp":
+        """One non-Ad-Library page (the plugin, a profile), with the swap."""
+        while True:
+            self._guard(what)
+            try:
+                r = self.lease.session.get_plain(url, self.deadline)
+            except (RateLimited, SessionDead, ScrapeFailed) as e:
+                self._recover(e, what)
+                continue
+            self.gets += 1
+            self.result.plain_gets += 1
+            return r
+
+    def plain_read(self, url: str, reader: Callable[[str], str | None], what: str) -> str | None:
+        """One non-Ad-Library page, read by `reader`. A wall (a 200 that is not the page) is a
+        dead session: swap once and fetch the same page on the fresh one; a second wall escapes."""
+        for attempt in (1, 2):
+            r = self.plain(url, what)
+            try:
+                return reader(r.text)
+            except SessionDead as e:
+                if attempt == 2:
+                    raise ScrapeBlocked(f"two fresh sessions got a wall on the {what}: {e}") from e
+                self._recover(e, what)
+        return None  # pragma: no cover
+
+
+def lookup(
+    *,
+    page_id: str | int | None = None,
+    facebook_url: str | None = None,
+    company_domain: str | None = None,
+    active_status: str = "active",
+    media_type: str = "all",
+    pool: "_SessionPool",
+    deadline: float | None = None,
+) -> BrandResult:
+    """The Ad Library's answer for one brand. Exactly one of `page_id`, `facebook_url` and
+    `company_domain` is used, in that order of preference."""
+    status = wire.normalise_active_status(active_status)
+    media = wire.normalise_media_type(media_type)
+    if media == "video":
+        status = "active"  # the vendor this replaces counted live video ads only; keep its meaning
+    started = time.time()
+    deadline = deadline if deadline is not None else started + settings.brand_budget_s
+
+    if page_id not in (None, ""):
+        result = BrandResult("page_id", str(page_id).strip(), status, media)
+    elif facebook_url:
+        result = BrandResult("facebook_url", str(facebook_url).strip(), status, media)
+    elif company_domain:
+        result = BrandResult("company_domain", str(company_domain).strip(), status, media)
+    else:
+        raise ValueError("invalid request: one of `page_id`, `facebook_url` or `company_domain` is required")
+
+    # What can be decided without a GET.
+    ref: tuple[str, str] | None = None
+    domain = ""
+    if result.resolver == "page_id":
+        if not result.query.isdigit():
+            raise ValueError(f"invalid page_id {result.query!r}: expected digits")
+    elif result.resolver == "facebook_url":
+        ref = wire.page_ref(result.query)
+        if ref is None:
+            result.note = "not a Facebook page URL"
+            result.seconds = round(time.time() - started, 1)
+            return result
+    else:
+        domain = wire.registrable_domain(result.query)
+        if not domain or "." not in domain:
+            raise ValueError(f"invalid company_domain {result.query!r}")
+
+    queued = time.time()
+    with pool.lease(timeout=max(0.5, deadline - queued)) as lease:
+        result.queue_s = round(time.time() - queued, 1)
+        run = _Run(lease, deadline, result)
+
+        # 1. resolve
+        candidate: str | None = None
+        slug: str | None = None
+        if result.resolver == "page_id":
+            candidate = result.query
+        elif result.resolver == "facebook_url":
+            kind, value = ref  # type: ignore[misc]
+            if kind == "id":
+                candidate, slug = value, value  # a numeric path may be a user id; the plugin resolves those too
+            else:
+                slug = value
+        else:
+            kind, view, _ = run.page(wire.domain_search_url(domain), f"domain search for {domain}")
+            if kind is Page.EMPTY:
+                result.note = f"no ad mentions {domain}"
+            else:
+                candidate = wire.pick_page(view.ads, domain)
+                if candidate is None:
+                    result.note = f"no ad among the {len(view.ads)} for {domain} lands on it"
+            if candidate is None:
+                result.seconds = round(time.time() - started, 1)
+                return result
+
+        # 2. the page view; a numeric URL that Meta does not know as a page goes through the plugin once
+        tried_slug = False
+        while True:
+            if candidate is None and slug is not None and not tried_slug:
+                tried_slug = True
+                candidate = _resolve_slug(run, slug)
+                if candidate is None:
+                    result.note = f"no page for facebook.com/{slug}"
+                    break
+            if candidate is None:
+                break
+            kind, view, _ = run.page(wire.page_view_url(candidate, status, media), f"page view of {candidate}")
+            if view.known:
+                result.found = True
+                result.page_id = candidate
+                result.count = view.count
+                result.ads = view.ads
+                result.info = view.info
+                break
+            if slug is not None and not tried_slug:
+                candidate = None  # a user id, most likely: resolve the path as a handle
+                continue
+            result.note = f"the Ad Library does not know page id {candidate}"
+            break
+
+    result.seconds = round(time.time() - started, 1)
+    return result
+
+
+def _resolve_slug(run: _Run, slug: str) -> str | None:
+    """A vanity handle to a page id: the public page plugin, then (when enabled) the profile page.
+    `None` when both render and neither knows the page."""
+    page_id = run.plain_read(wire.plugin_url(slug), wire.page_id_from_plugin, f"page plugin for {slug}")
+    if page_id or not settings.brand_profile_fallback:
+        return page_id
+    return run.plain_read(f"{wire.ORIGIN}/{slug}", wire.page_id_from_profile, f"profile page of {slug}")

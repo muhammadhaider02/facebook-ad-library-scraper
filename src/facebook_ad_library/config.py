@@ -53,6 +53,16 @@ class Settings:
     # Wall-clock budget for one search. Must stay under Stage 0's 300 s node timeout; see .env.example
     # for the arithmetic. Nothing cancels a request once it starts, so this is what bounds it.
     scrape_budget_s: float = _env_float("SCRAPE_BUDGET_S", 240)
+    # Brand lookups (POST /adyntel), called from n8n Code nodes with 30 s and 45 s ceilings: the
+    # lookup answers a 503 inside this budget rather than letting n8n's timeout hide the reason.
+    brand_budget_s: float = _env_float("BRAND_BUDGET_S", 25)
+    # Extra page-view GETs allowed when the page arrives without its results blob.
+    brand_ssr_retries: int = _env_int("BRAND_SSR_RETRIES", 2)
+    # Resolve a vanity URL the page plugin does not know by fetching the profile page too. Off until
+    # the deploy check has shown that page class is served to the VPS address; see .env.example.
+    brand_profile_fallback: bool = _env_bool("BRAND_PROFILE_FALLBACK", False)
+    # Lookup results live this long; short, so a re-run measures the site and not the cache.
+    adyntel_cache_ttl_s: float = _env_float("ADYNTEL_CACHE_TTL_S", 600)
     cache_ttl_s: float = _env_float("CACHE_TTL_S", 86400)
     cache_empty_ttl_s: float = _env_float("CACHE_EMPTY_TTL_S", 3600)
     cache_max_entries: int = _env_int("CACHE_MAX_ENTRIES", 2000)

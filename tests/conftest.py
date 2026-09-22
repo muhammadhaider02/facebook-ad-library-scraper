@@ -121,7 +121,13 @@ def fast_settings():
     from facebook_ad_library import api, session
     from facebook_ad_library.config import settings
 
-    before = {k: getattr(settings, k) for k in ("api_token", "spacing_min_s", "spacing_max_s", "rate_limit_sleep_s", "ssr_retries", "miss_streak_retire", "scrape_budget_s")}
+    before = {
+        k: getattr(settings, k)
+        for k in (
+            "api_token", "spacing_min_s", "spacing_max_s", "rate_limit_sleep_s", "ssr_retries", "miss_streak_retire",
+            "scrape_budget_s", "brand_budget_s", "brand_ssr_retries", "brand_profile_fallback", "adyntel_cache_ttl_s",
+        )
+    }
     set_frozen(settings, "api_token", "")  # a filled local .env must not turn the API tests into 401s
     set_frozen(settings, "spacing_min_s", 0)
     set_frozen(settings, "spacing_max_s", 0)
