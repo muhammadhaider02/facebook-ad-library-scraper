@@ -76,6 +76,28 @@ jobs:
               raise SystemExit(f'unexpected status {status}: {d}')
           "
 
+      - name: Live brand lookup through the container
+        run: |
+          curl -s --max-time 40 -o brand.json -w 'status=%{http_code} secs=%{time_total}\n' \
+            -X POST http://127.0.0.1:8002/adyntel \
+            -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
+            -d '{"api_key":"ignored","email":"ignored","page_id":"775991435791863"}' | tee brand_status.txt
+          python3 -c "
+          import json, re
+          status = re.search(r'status=(\d+)', open('brand_status.txt').read()).group(1)
+          d = json.load(open('brand.json'))
+          if status == '200':
+              assert isinstance(d, dict) and d, f'a known page id must not be not-found: {d}'
+              assert isinstance(d['number_of_ads'], int) and d['number_of_ads'] > 0, d
+              assert d['is_result_complete'] is True and isinstance(d['platform'], list) and isinstance(d['results'], list), d
+              print(f\"200: count={d['number_of_ads']} results={len(d['results'])} page={d['page_name']}\")
+          elif status == '503':
+              assert d['error']['type'] in ('ScrapeBlocked', 'RateLimited', 'ResultsMissing', 'ScrapeFailed', 'BudgetExceeded', 'Busy'), d
+              print('503 from a runner IP:', d['error']['type'], d['error']['message'][:120])
+          else:
+              raise SystemExit(f'unexpected status {status}: {d}')
+          "
+
       - name: Container logs
         if: always()
         run: docker logs scraper
