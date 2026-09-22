@@ -134,6 +134,7 @@ def fast_settings():
     session.reset_counters()
     session.pool.reset()
     api.cache.clear()
+    api.brand_cache.clear()
     for k in api.counters:
         api.counters[k] = 0
     yield
