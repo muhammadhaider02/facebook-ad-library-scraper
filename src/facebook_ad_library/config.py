@@ -36,16 +36,16 @@ class Settings:
     request_timeout_s: float = _env_float("REQUEST_TIMEOUT_S", 30)
     # Extra page GETs allowed when the page arrives without its results blob (about 1 in 4).
     ssr_retries: int = _env_int("SSR_RETRIES", 2)
-    max_concurrency: int = _env_int("MAX_CONCURRENCY", 2)
-    session_pool_size: int = _env_int("SESSION_POOL_SIZE", 2)
+    max_concurrency: int = _env_int("MAX_CONCURRENCY", 3)
+    session_pool_size: int = _env_int("SESSION_POOL_SIZE", 3)
     # Session retirement thresholds: page GETs made and age in seconds, whichever first.
     session_max_requests: int = _env_int("SESSION_MAX_REQUESTS", 200)
     session_max_age_s: float = _env_float("SESSION_MAX_AGE_S", 7200)
     # Random gap between two requests on one session.
     spacing_min_s: float = _env_float("SPACING_MIN_S", 2)
     spacing_max_s: float = _env_float("SPACING_MAX_S", 5)
-    # Global page GETs per minute from this host, across sessions.
-    rate_limit_per_min: int = _env_int("RATE_LIMIT_PER_MIN", 4)
+    # Global GETs per minute from this host, across sessions and both endpoints.
+    rate_limit_per_min: int = _env_int("RATE_LIMIT_PER_MIN", 12)
     # Sleep on an HTTP 429 before the single retry.
     rate_limit_sleep_s: float = _env_float("RATE_LIMIT_SLEEP_S", 60)
     # Consecutive pages without results after which a session is retired as suspect.

@@ -7,9 +7,10 @@
 # own UI - do not add a second proxy, it would fail to bind.
 #
 # Memory model. This is a single Python process with curl_cffi; no browser is ever launched.
-# A search holds one ~200 KB response at a time and the result cache is bounded by
-# CACHE_MAX_ENTRIES (~50 KB each, 2000 entries = ~100 MB at the very most). 512m is a
-# blast-radius guard for the host, not a working budget: hitting it means something leaked.
+# A search or a lookup holds one page of up to 1.7 MB while it is parsed, MAX_CONCURRENCY of them
+# at once, and the two result caches are bounded by CACHE_MAX_ENTRIES (~50 KB each, 2000 entries
+# = ~100 MB at the very most, twice). 512m is a blast-radius guard for the host, not a working
+# budget: hitting it means something leaked.
 services:
   scraper:
     build: .
