@@ -176,15 +176,16 @@ The pipeline's own harness, 22 Sep 2026: two lanes in the `scraper-testing` work
 
 **Lane 01, the qualification gate.** Fifty-three brands from 01's executions of the previous 14 hours (15 with 100+ live ads, 15 near the gate, 10 under 20 or not found, 5 that 01 had resolved through a page fallback, 8 with a page id stored by Stage 0), each looked up twice: by domain through a clone of `Adyntel: Ad Count`, and by the page id Adyntel had used, through a Code node with the bearer inline.
 
-| Metric | Canary, 12 brands (run 2705) | Full list, 53 brands (run 2713) |
-|---|---|---|
-| Brands Adyntel had found, found in-house | 12 of 12 | 46 of 46 |
-| Gate agreement (50+ live ads) | 12 of 12, no flips | 46 of 46, no flips |
-| Exact count match | 10 of 12; median difference 0 | median difference 0, mean 4.7 ads; 45 baselines under 24 h old, median relative difference 0% |
-| Domain path resolved to the page Adyntel used | 11 of 12 | 49 of 50 |
-| Both paths found the same page: counts equal | 11 of 11 | 51 of 51 |
-| Errors | 0 | 0 |
-| Page-path wall clock, uncached | 7.6 s (one) | p95 4.5 s, max 11.5 s |
+| Metric | Canary, 12 brands (run 2705) | Full list, 53 brands (run 2713) | Full list again, 12 min later (run 2723) |
+|---|---|---|---|
+| Brands Adyntel had found, found in-house | 12 of 12 | 46 of 46 | 46 of 46 |
+| Gate agreement (50+ live ads) | 12 of 12, no flips | 46 of 46, no flips | 46 of 46, no flips |
+| Exact count match | 10 of 12; median difference 0 | median difference 0, mean 4.7 ads; 45 baselines under 24 h old, median relative difference 0% | median 0, mean 4.2 |
+| Domain path resolved to the page Adyntel used | 11 of 12 | 49 of 50 | 49 of 50 |
+| Both paths found the same page: counts equal | 11 of 11 | 51 of 51 | 51 of 51 |
+| Errors | 0 | 0 | 0 |
+| Page-path wall clock, uncached | 7.6 s (one) | p95 4.5 s, max 11.5 s | max 6.9 s |
+| Counts against the previous run | | | 51 of 53 identical; Snapmaker 677 → 704 and Cryptozoic 169 → 171, live counts moving |
 
 What did not match, and why: Snapmaker 832 → 677 and Kids Dreams 82 → 63 against baselines 3 to 4 hours old, both large advertisers whose live count moves by the hour (the same page id on both sides, so it is the count that moved, not the page); Traitors Aboard, where Adyntel had answered 0 ads on page 101461635716856 while the domain resolver chose page 258509494006770, the one Stage 0 had stored for the brand, with 92 live ads landing on savana-games.com; Board.Fun, whose ads land on another domain, not found by domain (Adyntel found it) but found by its stored page id with 187 ads against 186. Two brands 01 had never resolved (Kids Australia, WobbleWink, both stored as numeric user-id URLs) were found by domain and by URL with 614 and 87 live ads.
 
