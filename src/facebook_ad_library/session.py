@@ -42,6 +42,12 @@ counters = {
     "session_dead": 0,
     "blocked": 0,
     "transient": 0,
+    # Plain GETs: the page plugin and profile pages a brand lookup uses to resolve a vanity URL.
+    # Counted apart so a refusal of those pages is visible separately from the Ad Library page.
+    "plain_calls": 0,
+    "plain_blocked": 0,
+    "plain_dead": 0,
+    "busy": 0,
 }
 _counters_lock = threading.Lock()
 
@@ -74,7 +80,7 @@ class Resp:
 
 
 class Transport(Protocol):
-    def get(self, url: str, headers: dict | None = None) -> Resp: ...
+    def get(self, url: str, headers: dict | None = None, timeout: float | None = None) -> Resp: ...
     def post(self, url: str, data: dict | None = None, headers: dict | None = None) -> Resp: ...
     def cookie_names(self) -> list[str]: ...
 
@@ -91,8 +97,9 @@ class CurlTransport:
         self._s = requests.Session(**kwargs)
         self._s.headers.update({"Accept-Language": "en-US,en;q=0.9"})
 
-    def get(self, url: str, headers: dict | None = None) -> Resp:
-        r = self._s.get(url, headers=headers or {})
+    def get(self, url: str, headers: dict | None = None, timeout: float | None = None) -> Resp:
+        kwargs = {"timeout": timeout} if timeout else {}
+        r = self._s.get(url, headers=headers or {}, **kwargs)
         return Resp(int(r.status_code), r.text, dict(r.headers))
 
     def post(self, url: str, data: dict | None = None, headers: dict | None = None) -> Resp:
@@ -131,6 +138,17 @@ class RateLimiter:
                     return
                 delay = 60.0 - (now - self._stamps[0])
             self._sleep(max(0.0, delay))
+
+    def eta(self) -> float:
+        """Seconds until the next call may go, 0 when a slot is free now. Lets a caller with a
+        deadline refuse a GET it could not start in time instead of sleeping past it."""
+        with self._lock:
+            now = self._clock()
+            while self._stamps and now - self._stamps[0] >= 60.0:
+                self._stamps.popleft()
+            if len(self._stamps) < self.per_minute:
+                return 0.0
+            return max(0.0, 60.0 - (now - self._stamps[0]))
 
 
 # --------------------------------------------------------------------------- session
@@ -198,56 +216,15 @@ class FbSession:
     # ----------------------------------------------------------------- one search
 
     def fetch(self, query: str, country: str, active_status: str = "active") -> tuple[wire.Page, list[dict]]:
-        """GET the search page and read its embedded results. Clears the challenge when Meta
-        raises one. Raises the typed error for anything that is not an Ad Library page."""
-        if self.retired:
-            raise wire.SessionDead(f"{self.label} is retired ({self.retire_reason})")
-        url = wire.bootstrap_url(query, country, active_status)
-        self.trace = []
-        delays = (1.0, 3.0)
-        for attempt in range(len(delays) + 1):
-            self._pace()
-            self.limiter.wait()
-            try:
-                r = self._get_page(url)
-            except wire.FacebookError:
-                raise
-            except Exception as e:  # noqa: BLE001 - anything from the HTTP stack is a vendor failure
-                r = Resp(0, f"{type(e).__name__}: {e}")
-                self.trace.append(f"GET failed: {r.text[:80]}")
-            self.last_call = self._clock()
-            self.last_text = r.text or ""
-            self.requests_made += 1
-            _bump("calls")
-            _bump("bytes", len(r.text or ""))
-            if r.status == 0 or r.status >= 500:
-                _bump("transient")
-                if attempt < len(delays):
-                    log.warning("%s: transient failure (http %s), retrying in %.0fs", self.label, r.status or "-", delays[attempt])
-                    self._sleep(delays[attempt])
-                    continue
-                raise wire.ScrapeFailed(f"page GET failed after {attempt + 1} attempts: http {r.status or '-'} {r.text[:120]!r}")
-            break
+        """GET the search page for a keyword and read its embedded results. Clears the challenge
+        when Meta raises one. Raises the typed error for anything that is not an Ad Library page."""
+        page, ads, _ = self.fetch_url(wire.bootstrap_url(query, country, active_status))
+        return page, ads
 
-        if r.status == 400:
-            _bump("blocked")
-            raise wire.ScrapeBlocked(
-                "the page answered HTTP 400 error page: the TLS fingerprint was rejected "
-                f"(is FB_IMPERSONATE={settings.impersonate!r} a current Chrome?)"
-            )
-        if r.status == 403:
-            _bump("blocked")
-            raise wire.ScrapeBlocked(f"the page answered HTTP 403 without a challenge, title={wire._title_of(r.text)!r}")
-        if r.status == 429:
-            _bump("rate_limited")
-            raise wire.RateLimited(f"http 429 after {self.requests_made} call(s) on {self.label}")
-        if r.status != 200:
-            _bump("session_dead")
-            raise wire.SessionDead(f"the page answered HTTP {r.status}, title={wire._title_of(r.text)!r} on {self.label}")
-        if not wire.is_app_page(r.text):
-            _bump("session_dead")
-            raise wire.SessionDead(f"a 200 that is not the Ad Library page, title={wire._title_of(r.text)!r} on {self.label}")
-
+    def fetch_url(self, url: str, deadline: float | None = None) -> tuple[wire.Page, list[dict], str]:
+        """GET one Ad Library page (a keyword search or a page view) and classify it. With a
+        deadline, the GET's timeout is what is left of it and transient retries stop at it."""
+        r = self._get(url, deadline, kind="page")
         page, ads = wire.classify_page(r.text)
         self.trace.append(f"page={page.value} ads={len(ads)}")
         if page is wire.Page.MISS:
@@ -257,10 +234,69 @@ class FbSession:
                 self.retire("miss_streak")
         else:
             self.miss_streak = 0
-        return page, ads
+        return page, ads, r.text
 
-    def _get_page(self, url: str) -> Resp:
-        r = self.transport.get(url, headers=self.PAGE_HEADERS)
+    def get_plain(self, url: str, deadline: float | None = None) -> Resp:
+        """GET a facebook.com page that is not the Ad Library (the page plugin, a profile page),
+        on this session's jar and pacing. No results classification: the caller reads the body."""
+        return self._get(url, deadline, kind="plain")
+
+    def _get(self, url: str, deadline: float | None, kind: str) -> Resp:
+        if self.retired:
+            raise wire.SessionDead(f"{self.label} is retired ({self.retire_reason})")
+        self.trace = []
+        delays = (1.0, 3.0)
+        for attempt in range(len(delays) + 1):
+            self._pace()
+            self.limiter.wait()
+            timeout = None
+            if deadline is not None:
+                timeout = max(1.0, min(settings.request_timeout_s, deadline - self._clock()))
+            try:
+                r = self._get_page(url, timeout)
+            except wire.FacebookError:
+                raise
+            except Exception as e:  # noqa: BLE001 - anything from the HTTP stack is a vendor failure
+                r = Resp(0, f"{type(e).__name__}: {e}")
+                self.trace.append(f"GET failed: {r.text[:80]}")
+            self.last_call = self._clock()
+            self.last_text = r.text or ""
+            self.requests_made += 1
+            _bump("calls" if kind == "page" else "plain_calls")
+            _bump("bytes", len(r.text or ""))
+            if r.status == 0 or r.status >= 500:
+                _bump("transient")
+                fits = deadline is None or self._clock() + delays[attempt if attempt < len(delays) else -1] + 2 < deadline
+                if attempt < len(delays) and fits:
+                    log.warning("%s: transient failure (http %s), retrying in %.0fs", self.label, r.status or "-", delays[attempt])
+                    self._sleep(delays[attempt])
+                    continue
+                raise wire.ScrapeFailed(f"{kind} GET failed after {attempt + 1} attempt(s): http {r.status or '-'} {r.text[:120]!r}")
+            break
+
+        blocked, dead = ("blocked", "session_dead") if kind == "page" else ("plain_blocked", "plain_dead")
+        if r.status == 400:
+            _bump(blocked)
+            raise wire.ScrapeBlocked(
+                f"the {kind} answered HTTP 400 error page: the TLS fingerprint was rejected "
+                f"(is FB_IMPERSONATE={settings.impersonate!r} a current Chrome?)"
+            )
+        if r.status == 403:
+            _bump(blocked)
+            raise wire.ScrapeBlocked(f"the {kind} answered HTTP 403 without a challenge, title={wire._title_of(r.text)!r}")
+        if r.status == 429:
+            _bump("rate_limited")
+            raise wire.RateLimited(f"http 429 after {self.requests_made} call(s) on {self.label}")
+        if r.status != 200:
+            _bump(dead)
+            raise wire.SessionDead(f"the {kind} answered HTTP {r.status}, title={wire._title_of(r.text)!r} on {self.label}")
+        if kind == "page" and not wire.is_app_page(r.text):
+            _bump(dead)
+            raise wire.SessionDead(f"a 200 that is not the Ad Library page, title={wire._title_of(r.text)!r} on {self.label}")
+        return r
+
+    def _get_page(self, url: str, timeout: float | None = None) -> Resp:
+        r = self.transport.get(url, headers=self.PAGE_HEADERS, timeout=timeout)
         self.trace.append(f"GET {r.status} {len(r.text)}B rd={r.headers.get('X-FB-Rd') or r.headers.get('x-fb-rd') or '-'}")
         if r.status == 403 and wire.CHALLENGE_MARKER in r.text:
             challenge = wire.challenge_url(r.text)
@@ -271,7 +307,7 @@ class FbSession:
             self.challenges += 1
             p = self.transport.post(challenge, headers={"Referer": url, "Origin": wire.ORIGIN})
             self.trace.append(f"POST challenge {p.status} cookies={','.join(self.transport.cookie_names()) or '-'}")
-            r = self.transport.get(url, headers=self.PAGE_HEADERS)
+            r = self.transport.get(url, headers=self.PAGE_HEADERS, timeout=timeout)
             self.trace.append(f"GET {r.status} {len(r.text)}B cookies={','.join(self.transport.cookie_names()) or '-'}")
         return r
 
@@ -355,8 +391,12 @@ class _SessionPool:
                 self.live = max(0, self.live - 1)
 
     @contextlib.contextmanager
-    def lease(self) -> Iterator[_Lease]:
-        self._slots.acquire()
+    def lease(self, timeout: float | None = None) -> Iterator[_Lease]:
+        """A session for the duration of one search or lookup. With a timeout, a caller that
+        cannot get a concurrency slot in time is answered `Busy` instead of queueing."""
+        if not self._slots.acquire(timeout=timeout):
+            _bump("busy")
+            raise wire.Busy(f"every one of the {self._slots._initial_value} slot(s) stayed busy for {timeout:.0f}s")
         try:
             s = self._take()
             if s is None:

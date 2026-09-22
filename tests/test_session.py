@@ -3,7 +3,7 @@
 import threading
 
 import pytest
-from conftest import CHALLENGE, Clock, fixture, make_pool, make_session, page, set_frozen, site
+from conftest import CHALLENGE, Clock, FakeFacebook, fixture, make_pool, make_session, page, set_frozen, site
 
 from facebook_ad_library import scraper as wire
 from facebook_ad_library.config import settings
@@ -75,7 +75,7 @@ def test_transients_retry_with_backoff_then_fail():
     assert kind is Page.ADS and sleeps == [1.0, 3.0] and s.requests_made == 3 and counters["transient"] == 2
 
     class Boom:
-        def get(self, url, headers=None):
+        def get(self, url, headers=None, timeout=None):
             raise ConnectionError("reset")
 
         def post(self, url, data=None, headers=None):
@@ -261,3 +261,94 @@ def test_curl_transport_builds_with_the_configured_impersonation(monkeypatch):
     assert t._s.headers["Accept-Language"].startswith("en-US") and t.cookie_names() == []
     CurlTransport()
     assert seen == {"impersonate": settings.impersonate, "timeout": settings.request_timeout_s}
+
+
+# --------------------------------------------------------------------------- fetch_url(), get_plain(), eta, lease timeout
+
+
+def test_fetch_url_returns_the_html_and_classifies_it():
+    fb = site([page("page_view_ads.html")])
+    s = make_session(fb)
+    kind, ads, html = s.fetch_url(wire.page_view_url("105396194411046"))
+    assert kind is Page.ADS and len(ads) == 4 and "search_results_connection" in html
+    assert fb.page_gets[-1][1] == wire.page_view_url("105396194411046") and s.requests_made == 1 and counters["calls"] == 1
+
+
+def test_get_plain_fetches_a_non_ad_library_page_on_the_same_jar_and_pacing():
+    fb = FakeFacebook({wire.PLUGIN_URL: [Resp(200, fixture("plugin_page.html"))]})
+    s = make_session(fb)
+    r = s.get_plain(wire.plugin_url("shaktimats"))
+    assert r.status == 200 and wire.page_id_from_plugin(r.text) == "775991435791863"
+    assert fb.page_gets == [] and len(fb.plain_gets) == 1 and fb.plain_gets[0][3]["Accept"].startswith("text/html")
+    assert counters["plain_calls"] == 1 and counters["calls"] == 0 and s.requests_made == 1
+
+
+def test_get_plain_clears_a_challenge_and_returns_whatever_page_comes_back():
+    fb = FakeFacebook({wire.PLUGIN_URL: [CHALLENGE, Resp(200, fixture("profile_wall.html"))], wire.ORIGIN + "/__rd_verify": [Resp(200, "")]})
+    s = make_session(fb)
+    r = s.get_plain(wire.plugin_url("x"))
+    assert r.status == 200 and "Log in" in r.text and s.challenges == 1  # the caller decides what a wall means
+
+
+@pytest.mark.parametrize("status, error, counter", [(400, ScrapeBlocked, "plain_blocked"), (403, ScrapeBlocked, "plain_blocked"), (404, SessionDead, "plain_dead")])
+def test_get_plain_refusals_are_counted_apart_from_the_page(status, error, counter):
+    fb = FakeFacebook({wire.PLUGIN_URL: [Resp(status, "<title>nope</title>")]})
+    s = make_session(fb)
+    with pytest.raises(error):
+        s.get_plain(wire.plugin_url("x"))
+    assert counters[counter] == 1 and counters["blocked"] == 0 and counters["session_dead"] == 0
+
+
+def test_a_deadline_bounds_the_get_timeout_and_stops_transient_retries():
+    clock = Clock()
+    fb = site([page()], challenge=False)
+    s = make_session(fb, clock=clock)
+    s.fetch_url(wire.bootstrap_url("a", "US"), deadline=clock() + 12)
+    assert fb.timeouts[-1] == 12  # what is left of the budget, under REQUEST_TIMEOUT_S
+    s.fetch_url(wire.bootstrap_url("a", "US"))
+    assert fb.timeouts[-1] is None
+    sleeps: list = []
+    s2 = make_session(site([Resp(503, "x"), Resp(503, "y"), page()], challenge=False), clock=clock, sleeps=sleeps)
+    with pytest.raises(ScrapeFailed):
+        s2.fetch_url(wire.bootstrap_url("a", "US"), deadline=clock() + 2)  # no room for the 1 s nap plus a GET
+    assert sleeps == [] and s2.requests_made == 1
+
+
+def test_rate_limiter_eta_tells_the_wait_without_sleeping():
+    clock = Clock()
+    lim = RateLimiter(2, clock, lambda s: clock.advance(s))
+    assert lim.eta() == 0
+    lim.wait()
+    lim.wait()
+    assert lim.eta() == 60
+    clock.advance(45)
+    assert lim.eta() == 15
+    clock.advance(15)
+    assert lim.eta() == 0
+
+
+def test_lease_with_a_timeout_answers_busy_instead_of_queueing():
+    from facebook_ad_library.scraper import Busy
+
+    pool = make_pool([site()], max_concurrency=1)
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold():
+        with pool.lease():
+            holding.set()
+            release.wait(5)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    holding.wait(5)
+    try:
+        with pytest.raises(Busy):
+            with pool.lease(timeout=0.05):
+                pass
+        assert counters["busy"] == 1
+    finally:
+        release.set()
+        t.join(5)
+    with pool.lease(timeout=1) as lease:  # the slot is free again
+        assert lease.session is not None

@@ -40,6 +40,7 @@ class FakeFacebook:
     def __init__(self, script: dict[str, list[Resp]] | None = None) -> None:
         self.script = {k: list(v) for k, v in (script or {}).items()}
         self.calls: list[tuple[str, str, dict | None, dict]] = []
+        self.timeouts: list[float | None] = []
         self.cookies: set[str] = set()
 
     def _next(self, url: str) -> Resp:
@@ -48,8 +49,9 @@ class FakeFacebook:
                 return queue.pop(0) if len(queue) > 1 else queue[0]
         return Resp(404, "<html><title>unscripted url</title></html>")
 
-    def get(self, url: str, headers: dict | None = None) -> Resp:
+    def get(self, url: str, headers: dict | None = None, timeout: float | None = None) -> Resp:
         self.calls.append(("GET", url, None, headers or {}))
+        self.timeouts.append(timeout)
         r = self._next(url)
         if url.startswith(wire.AD_LIBRARY) and r.status == 200:
             self.cookies.add("datr")
@@ -67,6 +69,11 @@ class FakeFacebook:
     @property
     def page_gets(self) -> list[tuple[str, str, dict | None, dict]]:
         return [c for c in self.calls if c[0] == "GET" and c[1].startswith(wire.AD_LIBRARY)]
+
+    @property
+    def plain_gets(self) -> list[tuple[str, str, dict | None, dict]]:
+        """GETs of facebook.com pages that are not the Ad Library: the page plugin and profiles."""
+        return [c for c in self.calls if c[0] == "GET" and not c[1].startswith(wire.AD_LIBRARY) and wire.CHALLENGE_MARKER not in c[1]]
 
 
 def page(name: str = "ssr_ads.html", status: int = 200) -> Resp:
