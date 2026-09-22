@@ -45,7 +45,7 @@ class Settings:
     spacing_min_s: float = _env_float("SPACING_MIN_S", 2)
     spacing_max_s: float = _env_float("SPACING_MAX_S", 5)
     # Global GETs per minute from this host, across sessions and both endpoints.
-    rate_limit_per_min: int = _env_int("RATE_LIMIT_PER_MIN", 12)
+    rate_limit_per_min: int = _env_int("RATE_LIMIT_PER_MIN", 20)
     # Sleep on an HTTP 429 before the single retry.
     rate_limit_sleep_s: float = _env_float("RATE_LIMIT_SLEEP_S", 60)
     # Consecutive pages without results after which a session is retired as suspect.

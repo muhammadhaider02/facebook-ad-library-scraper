@@ -50,7 +50,7 @@ docker compose logs -f --tail 100                            # follow the servic
 
 `.env` is read at container start (`env_file`), so a changed value needs `docker compose up -d`, not a restart of the process inside. Keep a dated copy before editing it. Check `/health` is idle (`in_flight: 0`) before recreating.
 
-Moving to 0.3.0 (the `/adyntel` endpoint) changes three defaults and adds four variables; `.env.example` has the reasons. Copy them into `.env` before the `up`: `MAX_CONCURRENCY=3`, `SESSION_POOL_SIZE=3`, `RATE_LIMIT_PER_MIN=12`, `BRAND_BUDGET_S=25`, `BRAND_SSR_RETRIES=2`, `BRAND_PROFILE_FALLBACK=false`, `ADYNTEL_CACHE_TTL_S=600`. A value left out takes the new default.
+Moving to 0.3.0 (the `/adyntel` endpoint) changes three defaults and adds four variables; `.env.example` has the reasons. Copy them into `.env` before the `up`: `MAX_CONCURRENCY=3`, `SESSION_POOL_SIZE=3`, `RATE_LIMIT_PER_MIN=20`, `BRAND_BUDGET_S=25`, `BRAND_SSR_RETRIES=2`, `BRAND_PROFILE_FALLBACK=false`, `ADYNTEL_CACHE_TTL_S=600`. A value left out takes the new default.
 
 The container has no `curl`. Read health from inside it with:
 
@@ -94,7 +94,7 @@ docker exec facebook-ad-library python -c "import urllib.request;print(urllib.re
    | `--url` is `not found (no page for facebook.com/shaktimats)` while `--page-id` works | the plugin rendered but without the page: read `diag --slug`'s saved page before changing anything | the id-carrying URL forms and stored page ids still work; keep the fallback off |
    | `diag --slug` reports `SessionDead` or `ScrapeBlocked` on the profile page only | that page class is refused to this address | leave `BRAND_PROFILE_FALLBACK=false`; nothing else is affected |
    | `ScrapeBlocked …400` on any of them | the TLS fingerprint was rejected | as for the search |
-6. Once the lookups pass, the burst timing that decides whether `RATE_LIMIT_PER_MIN` can go above 12: `docker compose exec scraper uv run --no-sync facebook-ad-library diag --page-id 775991435791863 --repeat 20` makes 20 page views on one session at the configured pace; every GET a `200` with `page=known` and no challenge after the first is the pass. Record the numbers in architecture.md, "How a brand lookup is made".
+6. Once the lookups pass, the burst timing that backs `RATE_LIMIT_PER_MIN`: `docker compose exec scraper uv run --no-sync facebook-ad-library diag --page-id 775991435791863 --repeat 20` makes 20 page views on one session at the configured pace; every GET a `200` with `page=known` and no challenge after the first is the pass. Record the numbers in architecture.md, "How a brand lookup is made".
 
 Measured on the VPS after the `scraper-testing` run of 19 Sep 2026 (12 calls from n8n over the Docker network, 0 failures, 170 ads; the full comparison is in architecture.md, [Measured against Apify](architecture.md#measured-against-apify)): 1.4 to 5.8 s per call, one page miss in 14 GETs retried once, `results_missing` 0, 63 MiB resident, 10 PIDs, 11 MB transferred.
 
@@ -114,7 +114,9 @@ The two HTTP Request nodes (`Adyntel: Ad Count` in 01, `Adyntel: Ad Creative` in
 
 ## Testing against the pipeline
 
-The production workflow is not edited. The service is exercised in the n8n workflow **`scraper-testing`** (`0q7jtSF7FG0cbyBe`) on the same instance, the way the Trustpilot and Reddit lanes there already do. `fb.md` describes the harness that exists there: a `Start FB Test` trigger, `FB Keyword List` with 12 keyword-country pairs, a disabled clone of Stage 0's Apify node, `Measure FB Response` with Stage 0's extraction verbatim, and `Collect FB Results`. The clone was pointed at this service on 19 Sep 2026 (URL, the `facebook-scraper` credential, no query parameters, enabled; body unchanged); the run's numbers are in architecture.md under [Measured against Apify](architecture.md#measured-against-apify).
+The production workflows are not edited. The service is exercised in the n8n workflow **`scraper-testing`** (`0q7jtSF7FG0cbyBe`) on the same instance, the way the Trustpilot and Reddit lanes there already do. `fb.md` describes the harness that exists there: a `Start FB Test` trigger, `FB Keyword List` with 12 keyword-country pairs, a disabled clone of Stage 0's Apify node, `Measure FB Response` with Stage 0's extraction verbatim, and `Collect FB Results`. The clone was pointed at this service on 19 Sep 2026 (URL, the `facebook-scraper` credential, no query parameters, enabled; body unchanged); the run's numbers are in architecture.md under [Measured against Apify](architecture.md#measured-against-apify).
+
+Two more lanes, added 22 Sep 2026 for the Adyntel replacement, each with a sticky note carrying its run protocol: **`Start ADY 01 Test`** (`ADY 01 Brand List` → `Loop ADY 01` → `In-house: Ad Count (domain)`, a clone of 01's HTTP node, → `In-house: Ad Count (page)`, the same brand by stored page id or URL → `Measure ADY 01` → `Collect ADY 01`) and **`Start ADY 02 Test`** (`ADY 02 Brand List` → `Loop ADY 02` → `In-house: Ad Creative` → `Analyse ADY 02` and `Collect Video Ads (in-house)`, 02's nodes verbatim but for the loop name and the URL → `Check Clip URL`, a HEAD per clip → `Measure ADY 02` → `Collect ADY 02`). The brand lists are literals built from 01's executions and the two data tables; `ADY 01 Brand List` has a `LIMIT` constant (12 for a canary, 0 for the whole list). Runs 2705, 2713 (lane 01) and 2708, 2719 (lane 02) are the ones in architecture.md, [Measured against Adyntel](architecture.md#measured-against-adyntel). Read a run's single `Collect ADY 0X` item; its `per_brand` array holds the rows.
 
 ## What to watch
 

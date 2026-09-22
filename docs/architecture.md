@@ -83,7 +83,7 @@ The Ad Library's only gate is the challenge above plus a TLS-fingerprint check. 
 
 The unit of identity is a session, not a request: one cookie jar (`datr`, `rd_challenge`), created empty and filled by its first GET. `FbSession` in `session.py` holds one; `_SessionPool` keeps `SESSION_POOL_SIZE` (3) of them warm, hands them out round-robin under a `MAX_CONCURRENCY` (3) semaphore, creates lazily on the first lease, and drops a session on its way back if it is retired or expired. A session expires after `SESSION_MAX_REQUESTS` (200) GETs or `SESSION_MAX_AGE_S` (7,200 s), both starting points rather than measured limits; `/health` reports `retired_by_reason` so the limit that actually bites can be seen. A session that gets `MISS_STREAK_RETIRE` (5) pages without results in a row is retired as suspect; a real empty result resets the streak. A lookup that cannot get a slot inside its budget is answered `Busy` rather than queued past the caller's own timeout.
 
-Pacing has two layers: a random gap of `SPACING_MIN_S` to `SPACING_MAX_S` (2 to 5 s) between GETs on one session, and a process-wide ceiling of `RATE_LIMIT_PER_MIN` (12) GETs a minute across all sessions and both endpoints. Stage 0 needs one GET per pair, 40 pairs an hour; a brand lookup is 1 to 3 GETs and 01 and 02 make up to 3 and 4 lookups per brand, one brand at a time each, so 12 lets one brand's lookups go through back to back. The measured pace is 41 consecutive GETs at 4 a minute (19 Sep) and about 25 page views in 30 minutes (22 Sep), both without a challenge or a throttle; anything above that is a guess until the burst timing in deployment.md has been run.
+Pacing has two layers: a random gap of `SPACING_MIN_S` to `SPACING_MAX_S` (2 to 5 s) between GETs on one session, and a process-wide ceiling of `RATE_LIMIT_PER_MIN` (20) GETs a minute across all sessions and both endpoints. Stage 0 needs one GET per pair, 40 pairs an hour; a brand lookup is 1 to 3 GETs and 01 and 02 make up to 3 and 4 lookups per brand, one brand at a time each. Measured 22 Sep 2026 from the VPS: 20 page views in 96 s at 12 a minute, then the harness's ~110 lookups in 10 minutes at 20 a minute, all served, no challenge after the first, no throttle, with Stage 0's hourly run completing normally in between; at 12 the harness's back-to-back calls hit the lookup budget once.
 
 ## Retries and the error ladder
 
@@ -117,8 +117,8 @@ The numbers only make sense together, and `.env.example` carries the arithmetic:
 
 | | |
 |---|---|
-| one GET, worst case | `SPACING_MAX_S` + 60 / `RATE_LIMIT_PER_MIN` + `REQUEST_TIMEOUT_S` = 5 + 5 + 30 = 40 s |
-| one search, worst case | (1 + `SSR_RETRIES`) × 40 s + `RATE_LIMIT_SLEEP_S` 60 s = 180 s |
+| one GET, worst case | `SPACING_MAX_S` + 60 / `RATE_LIMIT_PER_MIN` + `REQUEST_TIMEOUT_S` = 5 + 3 + 30 = 38 s |
+| one search, worst case | (1 + `SSR_RETRIES`) × 38 s + `RATE_LIMIT_SLEEP_S` 60 s = 174 s |
 | Stage 0 node timeout | 300 s |
 | measured, laptop, no contention | 3.6 to 6.4 s for one GET including the challenge; 45 s when a fifth GET inside a minute waited for the limiter at its old setting of 4 |
 
@@ -170,6 +170,38 @@ Then the pipeline's own harness, the same day: the `scraper-testing` workflow (`
 
 The two 45 s calls are the harness sending its 12 calls back to back; Stage 0 sends under one a minute and will not see that wait. What the run does not show is volume over days: about 60 page GETs in one day is the whole evidence that the VPS address is not throttled on the page, and `results_missing` and `blocked` on `/health` are what would move first if that changed.
 
+## Measured against Adyntel
+
+The pipeline's own harness, 22 Sep 2026: two lanes in the `scraper-testing` workflow (`0q7jtSF7FG0cbyBe`), each a clone of the production nodes pointed at `/adyntel`. Adyntel was not called; the baselines are the answers it had already written. `RATE_LIMIT_PER_MIN` was 12 for the first two runs and 20 for the rest; the service ran on the VPS beside Stage 0, whose 12:45 run completed normally in the middle of the lanes.
+
+**Lane 01, the qualification gate.** Fifty-three brands from 01's executions of the previous 14 hours (15 with 100+ live ads, 15 near the gate, 10 under 20 or not found, 5 that 01 had resolved through a page fallback, 8 with a page id stored by Stage 0), each looked up twice: by domain through a clone of `Adyntel: Ad Count`, and by the page id Adyntel had used, through a Code node with the bearer inline.
+
+| Metric | Canary, 12 brands (run 2705) | Full list, 53 brands (run 2713) |
+|---|---|---|
+| Brands Adyntel had found, found in-house | 12 of 12 | 46 of 46 |
+| Gate agreement (50+ live ads) | 12 of 12, no flips | 46 of 46, no flips |
+| Exact count match | 10 of 12; median difference 0 | median difference 0, mean 4.7 ads; 45 baselines under 24 h old, median relative difference 0% |
+| Domain path resolved to the page Adyntel used | 11 of 12 | 49 of 50 |
+| Both paths found the same page: counts equal | 11 of 11 | 51 of 51 |
+| Errors | 0 | 0 |
+| Page-path wall clock, uncached | 7.6 s (one) | p95 4.5 s, max 11.5 s |
+
+What did not match, and why: Snapmaker 832 → 677 and Kids Dreams 82 → 63 against baselines 3 to 4 hours old, both large advertisers whose live count moves by the hour (the same page id on both sides, so it is the count that moved, not the page); Traitors Aboard, where Adyntel had answered 0 ads on page 101461635716856 while the domain resolver chose page 258509494006770, the one Stage 0 had stored for the brand, with 92 live ads landing on savana-games.com; Board.Fun, whose ads land on another domain, not found by domain (Adyntel found it) but found by its stored page id with 187 ads against 186. Two brands 01 had never resolved (Kids Australia, WobbleWink, both stored as numeric user-id URLs) were found by domain and by URL with 614 and 87 live ads.
+
+**Lane 02, the research call.** Twelve brands with a stored research bundle, through clones of `Adyntel: Ad Creative` (`active_status: all`), `Analyse Ad Strategy` and `Collect Video Ads` (`media_type: video`), with one HEAD per selected clip, run twice ten minutes apart.
+
+| Metric | Run 2708 (12 a minute) | Run 2719 (20 a minute) |
+|---|---|---|
+| Creative call found | 11 of 12 | 12 of 12 |
+| Video call found | 12 of 12 | 12 of 12 |
+| Clips selected by 02's own 8-clip / 600 s rule | 95 | 95 |
+| Clips fetchable anonymously (`200`, `video/mp4`), with a decoded duration | 95 of 95 | 95 of 95 |
+| Live themes non-empty | 11 of 12 | 12 of 12 |
+| Formats seen | IMAGE, VIDEO, DCO, DPA, CAROUSEL | same |
+| Counts between the two runs | | identical on 11 brands, Copper Pearl 535 → 537 |
+
+The one miss in run 2708 was the service refusing a lookup with `BudgetExceeded` (12 s left, 15 s needed after one GET) while the harness's back-to-back calls sat on the 12-a-minute limiter; at 20 a minute the same brand answered in the next run, and the refusal is the designed outcome, a `503` before the Code node's 30 s. Two brands' lifetime counts (Mamma Mia Covers 238, HolStrength 270) sit under the live counts their bundles carry (290, 343), which are older sheet values; the page view shows 0 inactive ads for both, so lifetime equals live for them today.
+
 ## Layout
 
 | File | Role |
@@ -200,7 +232,7 @@ The two 45 s calls are the harness sending its 12 calls back to back; Stage 0 se
 | `SESSION_MAX_REQUESTS` | `200` | GETs before a session is retired |
 | `SESSION_MAX_AGE_S` | `7200` | age before a session is retired |
 | `SPACING_MIN_S` / `SPACING_MAX_S` | `2` / `5` | random gap between GETs on one session |
-| `RATE_LIMIT_PER_MIN` | `12` | GETs a minute from this process, all sessions, both endpoints |
+| `RATE_LIMIT_PER_MIN` | `20` | GETs a minute from this process, all sessions, both endpoints |
 | `RATE_LIMIT_SLEEP_S` | `60` | sleep before the one retry on a `429` (searches only) |
 | `MISS_STREAK_RETIRE` | `5` | consecutive pages without results that retire a session |
 | `SCRAPE_BUDGET_S` | `240` | wall-clock ceiling per search; must stay under Stage 0's 300 s |
