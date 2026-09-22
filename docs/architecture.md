@@ -71,6 +71,8 @@ The resolver ladder, in `brand.py`:
 
 `media_type: video` forces `active`, as the vendor did. The plugin and profile GETs share the session's cookie jar and pacing and count against the same limiter, but they are classified apart (`plain_*` counters): a wall or a refusal there is a dead session, never mistaken for "no such page".
 
+Measured from the VPS after the 0.3.0 deploy, 22 Sep 2026: every resolver path answered from the VPS address exactly as from the laptop (page id 2.3 s, vanity URL through the plugin 3.9 s, domain 6.6 s, video 6.1 s with one miss retried), the profile page was served too, and a burst of 20 page views on one session at 12 a minute took 96 s with 20 `200`s, one challenge on the first GET, no misses and no throttle.
+
 ## Why no browser, and why Chrome TLS
 
 The Ad Library's only gate is the challenge above plus a TLS-fingerprint check. Measured 19 Sep 2026: plain `curl` clears the challenge and receives the cookie, and is then answered with a `400 Sorry, something went wrong` error page on every request after it, including the homepage. `curl_cffi` with `impersonate="chrome"` is answered normally. So there is no Chromium in this service: one Python process, one curl handle per session.
