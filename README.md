@@ -10,7 +10,7 @@
 [![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![curl_cffi](https://img.shields.io/badge/HTTP-curl__cffi-FF6F00)](https://github.com/lexiforest/curl_cffi)
 
-Self-hosted Meta Ad Library keyword search with an HTTP API: one page GET per search, no GraphQL, no browser.
+Self-hosted Meta Ad Library keyword search and brand lookup with an HTTP API: one page GET per search, no GraphQL, no browser.
 
 [Architecture](docs/architecture.md) · [API](docs/api.md) · [Deployment](docs/deployment.md)
 
@@ -20,7 +20,7 @@ Self-hosted Meta Ad Library keyword search with an HTTP API: one page GET per se
 
 ## Platform
 
-This repo is a standalone ad-collection service behind the SmartLead brand-sourcing pipeline, running over its own HTTP API. It is the sibling of `trustpilot-reviews` and `reddit-reviews`, which serve their sites the same way, and all three stand in for the Apify actors the pipeline used to call.
+This repo is a standalone ad-collection service behind the SmartLead brand-sourcing pipeline, running over its own HTTP API. It is the sibling of `trustpilot-reviews` and `reddit-reviews`, which serve their sites the same way, and all three stand in for the Apify actors the pipeline used to call. This one also stands in for the Adyntel API the pipeline's qualification and research workflows call per brand.
 
 ## Quickstart
 
@@ -39,7 +39,7 @@ uv run facebook-ad-library serve      # HTTP service on :8002
 
 Verify with `curl localhost:8002/health` (expects `"status":"ok"`); interactive API docs are at `/docs`.
 
-The service is driven over its HTTP API: one keyword and one country in, the first page of active ads the Ad Library shows for that search out (up to 30), in the Apify actor's request and response shape. It reads them from the search page itself, which Meta serves with the results embedded; it never calls the GraphQL endpoint, which Meta refuses from datacenter addresses (see [architecture.md](docs/architecture.md#how-a-search-is-made)). See [api.md](docs/api.md) for the endpoint, auth (`Authorization: Bearer`) and the error contract.
+The service is driven over its HTTP API. `POST /facebook`: one keyword and one country in, the first page of active ads the Ad Library shows for that search out (up to 30), in the Apify actor's request and response shape. `POST /adyntel`: a brand's page id, page URL or domain in, that page's total ad count (live, lifetime or video) and its top ads by lifetime impressions out, in the Adyntel API's request and response shape. Both read the Ad Library page itself, which Meta serves with the results embedded; the service never calls the GraphQL endpoint, which Meta refuses from datacenter addresses (see [architecture.md](docs/architecture.md#how-a-search-is-made)). See [api.md](docs/api.md) for the endpoints, auth (`Authorization: Bearer`) and the error contract.
 
 ## Configuration
 
@@ -50,7 +50,7 @@ The only required value is the API bearer token. The rest shape the traffic (ses
 ## Development
 
 ```bash
-uv run pytest            # 94 tests against saved page fixtures, no network
+uv run pytest            # 190 tests against saved page fixtures, no network
 ```
 
 ## Deployment

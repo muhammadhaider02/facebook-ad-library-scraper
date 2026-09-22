@@ -50,6 +50,8 @@ docker compose logs -f --tail 100                            # follow the servic
 
 `.env` is read at container start (`env_file`), so a changed value needs `docker compose up -d`, not a restart of the process inside. Keep a dated copy before editing it. Check `/health` is idle (`in_flight: 0`) before recreating.
 
+Moving to 0.3.0 (the `/adyntel` endpoint) changes three defaults and adds four variables; `.env.example` has the reasons. Copy them into `.env` before the `up`: `MAX_CONCURRENCY=3`, `SESSION_POOL_SIZE=3`, `RATE_LIMIT_PER_MIN=12`, `BRAND_BUDGET_S=25`, `BRAND_SSR_RETRIES=2`, `BRAND_PROFILE_FALLBACK=false`, `ADYNTEL_CACHE_TTL_S=600`. A value left out takes the new default.
+
 The container has no `curl`. Read health from inside it with:
 
 ```bash
@@ -76,14 +78,39 @@ docker exec facebook-ad-library python -c "import urllib.request;print(urllib.re
    docker compose exec scraper uv run --no-sync facebook-ad-library search "running shoes" --country US --max 30 --summary
    ```
    Expect up to 30 ads from 10 or more advertisers in a few seconds; a second GET with `misses: 1` now and then is normal.
-3. `/health` should show `auth: true`, `max_concurrency: 2`, and after the first search `sessions.challenges: 1` and `sessions.calls` equal to the GETs made.
+3. `/health` should show `auth: true`, `max_concurrency: 3`, and after the first search `sessions.challenges: 1` and `sessions.calls` equal to the GETs made.
 4. Each successful call logs one line: `ok 'running shoes' US ads=30 attempts=1 misses=0 swaps=0 4.1s`. A retried one logs `page without results (1 of 3), retrying` before it.
+5. The brand lookup, the three ways it resolves, from the VPS address. The page view is the same page class as the search and needs no separate answer; the plugin and the profile page are two page classes this address had never fetched before 0.3.0, so this is where a refusal of either would show:
+   ```bash
+   docker compose exec scraper uv run --no-sync facebook-ad-library brand --page-id 775991435791863 --summary
+   docker compose exec scraper uv run --no-sync facebook-ad-library brand --url https://www.facebook.com/shaktimats --summary
+   docker compose exec scraper uv run --no-sync facebook-ad-library brand --domain gymshark.com --summary
+   docker compose exec scraper uv run --no-sync facebook-ad-library diag --slug shaktimats
+   ```
+
+   | Outcome | Meaning | Next |
+   |---|---|---|
+   | `found page 775991435791863 (Shakti Mat); count=~1000` on the first two, `found page 129669023798560 (Gymshark)` on the third, `diag --slug` reads the id from both pages | every page class is served to this address | done; `BRAND_PROFILE_FALLBACK=true` may be set |
+   | `--url` is `not found (no page for facebook.com/shaktimats)` while `--page-id` works | the plugin rendered but without the page: read `diag --slug`'s saved page before changing anything | the id-carrying URL forms and stored page ids still work; keep the fallback off |
+   | `diag --slug` reports `SessionDead` or `ScrapeBlocked` on the profile page only | that page class is refused to this address | leave `BRAND_PROFILE_FALLBACK=false`; nothing else is affected |
+   | `ScrapeBlocked …400` on any of them | the TLS fingerprint was rejected | as for the search |
+6. Once the lookups pass, the burst timing that decides whether `RATE_LIMIT_PER_MIN` can go above 12: `docker compose exec scraper uv run --no-sync facebook-ad-library diag --page-id 775991435791863 --repeat 20` makes 20 page views on one session at the configured pace; every GET a `200` with `page=known` and no challenge after the first is the pass. Record the numbers in architecture.md, "How a brand lookup is made".
 
 Measured on the VPS after the `scraper-testing` run of 19 Sep 2026 (12 calls from n8n over the Docker network, 0 failures, 170 ads; the full comparison is in architecture.md, [Measured against Apify](architecture.md#measured-against-apify)): 1.4 to 5.8 s per call, one page miss in 14 GETs retried once, `results_missing` 0, 63 MiB resident, 10 PIDs, 11 MB transferred.
 
 ## Rotating credentials
 
 `API_TOKEN`: change it in `.env`, recreate the container, then update the n8n Header Auth credential `facebook-scraper` (`5K2ikYegpPkEPGfn`, sending `Authorization: Bearer <token>`, the same shape as `trustpilot-scraper` and `reddit-scraper`) to match. Edit that credential in place; do not rename another one into it. Retrieve tokens in a terminal, not in anything that keeps a transcript: `grep ^API_TOKEN /opt/facebook-ad-library-scraper/.env` on the VPS.
+
+The same token also sits inline in every Code node that calls `/adyntel`, because n8n Code nodes cannot read stored credentials (the Adyntel key sat there the same way). Each of those nodes starts with one line, `const IN_HOUSE_TOKEN = '…'; // mirrors the facebook-scraper credential`, so a rotation is that line in each of them, and nothing else in the node changes. Where they are:
+
+| Workflow | Node | State |
+|---|---|---|
+| `scraper-testing` | `In-house: Ad Count (page)`, `Collect Video Ads (in-house)` | the harness lanes |
+| `01 · Find The Founder` | `Resolve Ads Via Facebook Page`, `Resolve Ads Via Searched Page`, `Resolve Ad Count` | after the cutover only |
+| `02 · Learn About The Brand` | `Resolve Ads Via Facebook Page`, `Collect Video Ads` | after the cutover only |
+
+The two HTTP Request nodes (`Adyntel: Ad Count` in 01, `Adyntel: Ad Creative` in 02) use the credential, like the harness's HTTP clones.
 
 ## Testing against the pipeline
 
@@ -100,7 +127,11 @@ The production workflow is not edited. The service is exercised in the n8n workf
 | `/health` `session_dead` rising | sessions are being refused mid-life; check `retired_by_reason` and the session ages, and lower `SESSION_MAX_REQUESTS` |
 | `/health` `sessions.challenges` rising faster than `sessions_minted` | Meta is re-challenging live sessions; the service clears it, but it is a change worth noting |
 | `/health` `empty` rising across many keywords | either the keywords are bad or Meta is answering empty pages; a real empty carries an empty results blob, so compare with `sessions.misses` |
-| `docker stats` memory climbing | the cache is the only thing that grows; check `cache.entries` against `CACHE_MAX_ENTRIES` |
+| `/health` `adyntel_not_found` a large share of `adyntel_requests` | the resolver, not Meta: read the log lines (`not-found adyntel company_domain=… (no ad among the 30 for … lands on it)`) and check the brands by hand with `brand --domain` |
+| `/health` `sessions.plain_blocked` or `plain_dead` rising | the page plugin or the profile page is being refused to this address while the Ad Library page is not; set `BRAND_PROFILE_FALLBACK=false` if it is on, and send `page_id` from the stored table where the workflow can |
+| `/health` `budget_exceeded` or `busy` rising | lookups are queueing behind each other or behind the limiter; either the callers overlap more than `MAX_CONCURRENCY` allows or `RATE_LIMIT_PER_MIN` is too low for the burst. `X-Queue-Seconds` on the responses says which |
+| `/health` `sessions.sessions_minted` rising steadily | expected at the higher rate: `SESSION_MAX_REQUESTS` (200) retires a session after about 200 GETs; not a fault unless `retired_by_reason` shows `session_dead` or `miss_streak` |
+| `docker stats` memory climbing | the caches are the only things that grow; check `cache.entries` and `brand_cache.entries` against `CACHE_MAX_ENTRIES` |
 
 ## Cutting the production workflow over
 
@@ -112,9 +143,22 @@ Not applied, and not to be applied without a decision. Recorded so the shape of 
 
 Rollback is the URL and the credential.
 
+The Adyntel cutover in `01 · Find The Founder` and `02 · Learn About The Brand`, also not applied. Seven call sites; every body stays as it is, so the node code that reads the answer is untouched. Keep every node name: the telemetry fields are keyed on them.
+
+| Workflow / node | Change |
+|---|---|
+| 01 `Adyntel: Ad Count` (HTTP) | URL → `http://facebook-ad-library:8002/adyntel`; authentication → the `facebook-scraper` Header Auth credential; drop the `Content-Type` header parameter; body, 60 s timeout and On Error unchanged. Later, optionally, add `"page_id"` from the stored table so the domain is not resolved at all |
+| 01 `Resolve Ads Via Facebook Page`, `Resolve Ads Via Searched Page`, `Resolve Ad Count` (Code) | four edits each: the `IN_HOUSE_TOKEN` const at the top, the URL in the `httpRequest` call, `headers: { Authorization: 'Bearer ' + IN_HOUSE_TOKEN }` in it, the `api_key` and `email` lines deleted. `Resolve Ad Count`'s loop never runs (`is_result_complete` is always `true`) and can stay |
+| 02 `Adyntel: Ad Creative` (HTTP) | URL, credential, drop the header parameter; body keeps `active_status: "all"` |
+| 02 `Resolve Ads Via Facebook Page`, `Collect Video Ads` (Code) | the same four edits; bodies keep `facebook_url` + `active_status: 'all'` and `company_domain` + `media_type: 'video'`. Later, optionally, `page_id` in the video call fixes the known gap for brands that resolved through the page fallback |
+| 01 and 02 `Build Run Telemetry` | `ADYNTEL_USD_PER_CALL` → `0`; the `adyntel_*` field names stay so `90 · Watch The Pipeline` and the cost audit keep parsing |
+| `90 · Watch The Pipeline` | relabel the Adyntel vendor line as the in-house Ad Library; keep the call-count check |
+
+Rollback is the URL and the auth at each site, with the old lines kept in a sticky note per node (the key written as a pointer to where it lives, not the literal). Revoke the Adyntel key once the swap has held.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on pushes to `main`, pull requests and manual dispatch:
 
 - **unit-tests**: `uv run pytest -q` on Python 3.11.
-- **docker-image**: builds the image, starts it with a token minted for that run only, and checks `/health`, that a missing token is `401`, that a body without `query` is `400`, and a live search with Stage 0's verbatim body. A GitHub runner is a datacenter address like the VPS; the page GET is expected to work from it, but a `503` whose `error.type` is one of this service's own (`ScrapeBlocked`, `RateLimited`, `ResultsMissing`, `ScrapeFailed`) is still an accepted outcome of that last step, because Meta decides per request whether the page carries its results. A `200` must be an array whose items carry `page_name` and `snapshot.caption`. Anything else fails the build.
+- **docker-image**: builds the image, starts it with a token minted for that run only, and checks `/health`, that a missing token is `401`, that a body without `query` is `400`, a live search with Stage 0's verbatim body, and a live brand lookup by page id. A GitHub runner is a datacenter address like the VPS; the page GET is expected to work from it, but a `503` whose `error.type` is one of this service's own (`ScrapeBlocked`, `RateLimited`, `ResultsMissing`, `ScrapeFailed`, `BudgetExceeded`, `Busy`) is still an accepted outcome of those live steps, because Meta decides per request whether the page carries its results. A `200` search must be an array whose items carry `page_name` and `snapshot.caption`; a `200` lookup must be an envelope with an integer `number_of_ads` above zero, never `{}`, because the page id is a real one. Anything else fails the build.
