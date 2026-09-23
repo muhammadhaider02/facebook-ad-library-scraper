@@ -183,3 +183,30 @@ def test_page_view_dead_session_swaps_once_then_blocks():
     assert res.found and res.session_swaps == 1
     with pytest.raises(ScrapeBlocked, match="two fresh sessions"):
         lookup(page_id=SHAKTI, pool=make_pool([fb([Resp(302, "")]), fb([Resp(302, "")])]))
+
+
+# --------------------------------------------------------------------------- the total served unfilled
+
+
+def short_page(count: int = 0) -> Resp:
+    """The Muscle Mat page view with its total rewritten below the four ads it carries."""
+    return Resp(200, fixture("page_view_ads.html").replace('"count":1783', f'"count":{count}', 1), {"X-FB-Rd": "0"})
+
+
+def test_a_total_below_the_ads_on_the_page_is_refetched():
+    t = fb([short_page(0), page("page_view_ads.html")])
+    res = lookup(page_id="105396194411046", pool=make_pool([t]))
+    assert res.found and res.count == 1783 and len(res.ads) == 4
+    assert res.attempts == 2 and res.short_counts == 1 and res.misses == 0
+
+
+def test_a_total_still_short_after_the_retries_is_floored_to_the_ads_on_the_page():
+    set_frozen(settings, "brand_ssr_retries", 1)
+    res = lookup(page_id="105396194411046", pool=make_pool([fb([short_page(2)])]))
+    assert res.found and res.count == 4 and len(res.ads) == 4
+    assert res.attempts == 2 and res.short_counts == 2
+
+
+def test_a_total_equal_to_or_above_the_ads_is_taken_as_served():
+    res = lookup(page_id="105396194411046", pool=make_pool([fb([short_page(4)])]))
+    assert res.found and res.count == 4 and res.attempts == 1 and res.short_counts == 0

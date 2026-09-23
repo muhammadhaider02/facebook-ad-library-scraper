@@ -51,7 +51,7 @@ counters = {
     "bad_request": 0, "blocked": 0, "rate_limited": 0, "results_missing": 0, "failed": 0, "in_flight": 0,
     # POST /adyntel
     "adyntel_requests": 0, "adyntel_found": 0, "adyntel_not_found": 0, "adyntel_cache_hits": 0, "adyntel_resolve_hits": 0,
-    "adyntel_by_page_id": 0, "adyntel_by_url": 0, "adyntel_by_domain": 0, "busy": 0, "budget_exceeded": 0,
+    "adyntel_by_page_id": 0, "adyntel_by_url": 0, "adyntel_by_domain": 0, "adyntel_short_counts": 0, "busy": 0, "budget_exceeded": 0,
 }
 _FAILURE_COUNTER = {
     "RateLimited": "rate_limited", "ResultsMissing": "results_missing", "ScrapeBlocked": "blocked",
@@ -236,6 +236,7 @@ def _brand_headers(result: BrandResult, cache_state: str) -> dict:
         "X-Queue-Seconds": str(result.queue_s),
         "X-Attempts": str(result.attempts),
         "X-Misses": str(result.misses),
+        "X-Short-Counts": str(result.short_counts),
         "X-Plain-Gets": str(result.plain_gets),
         "X-Session-Swaps": str(result.session_swaps),
         "X-Cache": cache_state,
@@ -316,12 +317,14 @@ async def adyntel(req: BrandRequest):
             # An id Meta does not know stays unknown; a vanity or a domain is not pinned, in case
             # the plugin or the keyword search had an off moment.
             brand_cache.put(("adyntel", value, status, media), result, settings.cache_empty_ttl_s)
-    if result.misses:
+    if result.misses or result.short_counts:
         counters["retried"] += 1
+    if result.short_counts:
+        counters["adyntel_short_counts"] += 1
     log.info(
-        "%s adyntel %s=%s page=%s status=%s media=%s count=%d ads=%d attempts=%d misses=%d plain=%d swaps=%d queue=%.1fs %.1fs%s",
+        "%s adyntel %s=%s page=%s status=%s media=%s count=%d ads=%d attempts=%d misses=%d short=%d plain=%d swaps=%d queue=%.1fs %.1fs%s",
         "ok" if result.found else "not-found", resolver, value, result.page_id or "-", status, media, result.count,
-        len(result.ads or []), result.attempts, result.misses, result.plain_gets, result.session_swaps, result.queue_s,
+        len(result.ads or []), result.attempts, result.misses, result.short_counts, result.plain_gets, result.session_swaps, result.queue_s,
         time.time() - started, f" ({result.note})" if result.note else "",
     )
     return JSONResponse(content=to_envelope(result, req.max_results), headers=_brand_headers(result, "miss"))

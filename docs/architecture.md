@@ -96,6 +96,7 @@ Pacing has two layers: a random gap of `SPACING_MIN_S` to `SPACING_MAX_S` (2 to 
 | `400` (the TLS symptom), `403` without the challenge marker, a challenge page with no URL | `ScrapeBlocked` | raise; a new jar would not help |
 | any other non-`200`, or a `200` that is not the Ad Library page (no `LSD` token blob) | `SessionDead` | retire the session, swap once |
 | a page without the results blob | (not an error yet) | retry, up to `SSR_RETRIES` more GETs on the same session |
+| a page view whose total is below the ads on it | (not an error yet) | retry, up to `BRAND_SSR_RETRIES` more GETs; when every attempt is short, the ads on the page are the total. Meta now and then serves the count unfilled: first seen in production on 23 Sep 2026 (02's execution 3235, The Sleep Co, `count: 0` above 30 video ads, 55 on the next fetch), never in the 100-plus harness lookups the day before. Passed through, a 0 above a page full of ads would fail 01's 50-ads gate for a brand that clears it |
 
 One session swap is allowed per search. A second failure escapes as the API's `503`; two `SessionDead`s in a row become `ScrapeBlocked`. Every retry, swap and sleep is priced against the deadline before it starts; the first GET is never skipped.
 

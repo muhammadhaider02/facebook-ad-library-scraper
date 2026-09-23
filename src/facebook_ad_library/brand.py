@@ -61,6 +61,7 @@ class BrandResult:
     note: str = ""  # why not found
     attempts: int = 0  # Ad Library page GETs that answered with the page
     misses: int = 0  # of those, pages without the results blob
+    short_counts: int = 0  # of those, pages whose total was below the ads on them (the count served unfilled)
     plain_gets: int = 0  # plugin and profile GETs
     queue_s: float = 0.0  # time spent waiting for a concurrency slot
     seconds: float = 0.0
@@ -111,8 +112,13 @@ class _Run:
         self.result.session_swaps = self.lease.swaps
 
     def page(self, url: str, what: str) -> tuple[Page, PageView, str]:
-        """One Ad Library page, with the miss retries and the swap."""
+        """One Ad Library page, with the miss retries and the swap. A page whose total is below the
+        ads it carries is refetched like a miss: Meta now and then serves the count unfilled (seen in
+        production on 23 Sep 2026: `count: 0` above 30 video ads, 55 on the next fetch), and a total
+        of 0 on a page full of ads would fail the 50-ads gate for a brand that clears it. When every
+        attempt is short, the ads on the page are the floor."""
         misses = 0
+        short = 0
         while True:
             self._guard(what)
             try:
@@ -130,6 +136,14 @@ class _Run:
                 log.info("%s: page without results (%d of %d), retrying", what, misses, settings.brand_ssr_retries + 1)
                 continue
             _, view = wire.classify_page_view(html)
+            if view is not None and view.count < len(view.ads):
+                short += 1
+                self.result.short_counts += 1
+                if short <= settings.brand_ssr_retries:
+                    log.info("%s: total %d below the %d ads on the page (%d of %d), retrying", what, view.count, len(view.ads), short, settings.brand_ssr_retries + 1)
+                    continue
+                log.warning("%s: total still %d below the %d ads on the page; the ads are the floor", what, view.count, len(view.ads))
+                view = view._replace(count=len(view.ads))
             return kind, view, html
 
     def plain(self, url: str, what: str) -> "Resp":

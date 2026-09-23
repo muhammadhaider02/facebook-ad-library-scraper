@@ -50,7 +50,7 @@ The only required value is the API bearer token. The rest shape the traffic (ses
 ## Development
 
 ```bash
-uv run pytest            # 190 tests against saved page fixtures, no network
+uv run pytest            # 193 tests against saved page fixtures, no network
 ```
 
 ## Deployment

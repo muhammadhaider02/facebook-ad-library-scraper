@@ -179,6 +179,7 @@ One object per ad, in the order the Ad Library shows them. Every key is present 
 | `X-Scrape-Seconds` | wall clock for the search |
 | `X-Attempts` | page GETs that answered with the Ad Library page; a challenge re-GET is not a second attempt |
 | `X-Misses` | of those, pages that came without their results and were retried |
+| `X-Short-Counts` | of those, pages whose total was below the ads on them and were refetched; Meta now and then serves the count unfilled (`count: 0` above 30 ads, seen 23 Sep 2026). When every attempt is short, `number_of_ads` is the number of ads on the page, a floor, never 0 |
 | `X-Session-Swaps` | `1` when the first session was refused and a fresh one finished the search |
 | `X-Cache` | `hit` or `miss` |
 
@@ -208,10 +209,10 @@ Unauthenticated, for uptime checks and the Docker `HEALTHCHECK`.
 
 ```json
 {
-  "status": "ok", "version": "0.3.0", "auth": true, "proxy": false, "max_concurrency": 3,
+  "status": "ok", "version": "0.3.1", "auth": true, "proxy": false, "max_concurrency": 3,
   "requests": 3, "ok": 2, "empty": 0, "retried": 1, "cache_hits": 1,
   "bad_request": 1, "blocked": 0, "rate_limited": 0, "results_missing": 0, "failed": 0, "in_flight": 0,
-  "adyntel_requests": 4, "adyntel_found": 3, "adyntel_not_found": 1, "adyntel_cache_hits": 1, "adyntel_resolve_hits": 1,
+  "adyntel_requests": 4, "adyntel_found": 3, "adyntel_not_found": 1, "adyntel_cache_hits": 1, "adyntel_resolve_hits": 1, "adyntel_short_counts": 0,
   "adyntel_by_page_id": 1, "adyntel_by_url": 1, "adyntel_by_domain": 2, "busy": 0, "budget_exceeded": 0,
   "sessions": { "live": 1, "warm": 1, "sessions_minted": 1, "sessions_retired": 0, "retired_by_reason": {},
                 "challenges": 1, "calls": 6, "bytes": 4711140, "misses": 1, "rate_limited": 0,
