@@ -107,8 +107,8 @@ The same token also sits inline in every Code node that calls `/adyntel`, becaus
 | Workflow | Node | State |
 |---|---|---|
 | `scraper-testing` | `In-house: Ad Count (page)`, `Collect Video Ads (in-house)` | the harness lanes |
-| `01 · Find The Founder` | `Resolve Ads Via Facebook Page`, `Resolve Ads Via Searched Page`, `Resolve Ad Count` | after the cutover only |
-| `02 · Learn About The Brand` | `Resolve Ads Via Facebook Page`, `Collect Video Ads` | after the cutover only |
+| `01 · Find The Founder` | `Resolve Ads Via Facebook Page`, `Resolve Ads Via Searched Page`, `Resolve Ad Count` | production since 23 Sep 2026 |
+| `02 · Learn About The Brand` | `Resolve Ads Via Facebook Page`, `Collect Video Ads` | production since 23 Sep 2026 |
 
 The two HTTP Request nodes (`Adyntel: Ad Count` in 01, `Adyntel: Ad Creative` in 02) use the credential, like the harness's HTTP clones.
 
@@ -145,18 +145,18 @@ Not applied, and not to be applied without a decision. Recorded so the shape of 
 
 Rollback is the URL and the credential.
 
-The Adyntel cutover in `01 · Find The Founder` and `02 · Learn About The Brand`, also not applied. Seven call sites; every body stays as it is, so the node code that reads the answer is untouched. Keep every node name: the telemetry fields are keyed on them.
+The Adyntel cutover in `01 · Find The Founder` and `02 · Learn About The Brand` was applied and published on 23 Sep 2026 (01 version `4a531d73`, 02 version `5fc4124b`, `90 · Watch The Pipeline` version `ed346a7c`; the previous published versions are `7682a9f6`, `d39fa547` and `17863f59` in each workflow's history). Seven call sites; every body keeps its lookup fields, so the node code that reads the answer is untouched, and only the `api_key` and `email` lines went. Every node name is kept: the telemetry fields are keyed on them. The server-side version diff of each workflow was checked before publishing: only the nodes in the table and one added sticky note changed, no connections.
 
 | Workflow / node | Change |
 |---|---|
-| 01 `Adyntel: Ad Count` (HTTP) | URL → `http://facebook-ad-library:8002/adyntel`; authentication → the `facebook-scraper` Header Auth credential; drop the `Content-Type` header parameter; body, 60 s timeout and On Error unchanged. Later, optionally, add `"page_id"` from the stored table so the domain is not resolved at all |
+| 01 `Adyntel: Ad Count` (HTTP) | URL → `http://facebook-ad-library:8002/adyntel`; authentication → the `facebook-scraper` Header Auth credential; drop the `Content-Type` header parameter; `api_key` and `email` dropped from the body, `company_domain` kept; 60 s timeout and On Error unchanged. Later, optionally, add `"page_id"` from the stored table so the domain is not resolved at all |
 | 01 `Resolve Ads Via Facebook Page`, `Resolve Ads Via Searched Page`, `Resolve Ad Count` (Code) | four edits each: the `IN_HOUSE_TOKEN` const at the top, the URL in the `httpRequest` call, `headers: { Authorization: 'Bearer ' + IN_HOUSE_TOKEN }` in it, the `api_key` and `email` lines deleted. `Resolve Ad Count`'s loop never runs (`is_result_complete` is always `true`) and can stay |
-| 02 `Adyntel: Ad Creative` (HTTP) | URL, credential, drop the header parameter; body keeps `active_status: "all"` |
+| 02 `Adyntel: Ad Creative` (HTTP) | URL, credential, drop the header parameter and the two identity lines; body keeps `company_domain` and `active_status: "all"` |
 | 02 `Resolve Ads Via Facebook Page`, `Collect Video Ads` (Code) | the same four edits; bodies keep `facebook_url` + `active_status: 'all'` and `company_domain` + `media_type: 'video'`. Later, optionally, `page_id` in the video call fixes the known gap for brands that resolved through the page fallback |
 | 01 and 02 `Build Run Telemetry` | `ADYNTEL_USD_PER_CALL` → `0`; the `adyntel_*` field names stay so `90 · Watch The Pipeline` and the cost audit keep parsing |
 | `90 · Watch The Pipeline` | relabel the Adyntel vendor line as the in-house Ad Library; keep the call-count check |
 
-Rollback is the URL and the auth at each site, with the old lines kept in a sticky note per node (the key written as a pointer to where it lives, not the literal). Revoke the Adyntel key once the swap has held.
+Rollback is the URL and the auth at each site, with the old lines kept in a sticky note per workflow named `Rollback: Adyntel -> in-house Ad Library` (the key written as a pointer to where it lives, not the literal), or `restore_workflow_version` to the previous published version listed above followed by a publish. Revoke the Adyntel key once the swap has held.
 
 ## CI
 
