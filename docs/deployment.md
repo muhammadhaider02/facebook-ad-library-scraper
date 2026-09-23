@@ -158,6 +158,16 @@ The Adyntel cutover in `01 · Find The Founder` and `02 · Learn About The Brand
 
 Rollback is the URL and the auth at each site, with the old lines kept in a sticky note per workflow named `Rollback: Adyntel -> in-house Ad Library` (the key written as a pointer to where it lives, not the literal), or `restore_workflow_version` to the previous published version listed above followed by a publish. Revoke the Adyntel key once the swap has held.
 
+The Brave replacement in `01 · Find The Founder` was applied and published on 23 Sep 2026 (01 version `54a5de58`, previous `4a531d73`). No service change: the domain lookup at `Adyntel: Ad Count` is already the Ad Library page search, so a brand that reaches the old Brave slot has already failed it. Evidence in [architecture.md](architecture.md#measured-against-brave).
+
+| Workflow / node | Change |
+|---|---|
+| 01 `No Page Found` (Code, new) | takes the false branch of `IF: Has Stored Page?` and emits the `content: NONE` item that `Filter Facebook Candidates` emitted when Brave had no usable result, so `Resolve Ads Via Searched Page` sends the brand to Needs Review without spending a retry |
+| 01 `Brave: Page Search`, `Filter Facebook Candidates`, `IF: Have Candidates?`, `Claude: Find Facebook Page` | parked: the inbound edge from `IF: Has Stored Page?` removed; the nodes, their own connections and the `Brave Search` credential left in place, not disabled (a disabled node passes items through) |
+| 01 `Build Run Telemetry` | `stored_page_misses` counts `No Page Found` runs; new `page_search_exhausted`; `brave_calls` and `brave_errors` stay and read 0, so `90 · Watch The Pipeline` keeps parsing |
+
+Rollback is the one edge (the sticky note `Rollback: Brave -> in-house Ad Library search` in 01 holds the Brave node's settings and the telemetry lines), or `restore_workflow_version` to `4a531d73` and a publish. Cancel the Brave subscription after seven days of `workflow1_cost` rows with `brave_calls: 0` and Needs Review and qualified counts steady; the parked nodes, the credential and the `brave_*` fields go together in a later cleanup.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on pushes to `main`, pull requests and manual dispatch:

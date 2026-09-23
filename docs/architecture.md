@@ -71,6 +71,8 @@ The resolver ladder, in `brand.py`:
 
 `media_type: video` forces `active`, as the vendor did. The plugin and profile GETs share the session's cookie jar and pacing and count against the same limiter, but they are classified apart (`plain_*` counters): a wall or a refusal there is a dead session, never mistaken for "no such page".
 
+Why the domain search works as well as it does: the Ad Library shows every ad's landing domain as its `caption` (the bare domain, `probablyillegal.com`), so a keyword search on the domain is close to an exact "ads landing here" query, and `pick_page` only has to choose among the advertisers whose ads land on it. A brand-**name** keyword search is not a substitute and is not offered: Meta's `keyword_unordered` is fuzzy on words and does not index page names. Measured 23 Sep 2026 with `search --country ALL`: "Home and Sprout" returned 30 ads from 11 unrelated pages and not the brand's own page (which the domain search finds, 1 live ad); "Solar Titans" returned the brand's page last of 29 and took 44 s on a single GET; "Probably Illegal Game" 5 owned ads among 30 from 16 pages.
+
 Measured from the VPS after the 0.3.0 deploy, 22 Sep 2026: every resolver path answered from the VPS address exactly as from the laptop (page id 2.3 s, vanity URL through the plugin 3.9 s, domain 6.6 s, video 6.1 s with one miss retried), the profile page was served too, and a burst of 20 page views on one session at 12 a minute took 96 s with 20 `200`s, one challenge on the first GET, no misses and no throttle.
 
 ## Why no browser, and why Chrome TLS
@@ -203,6 +205,27 @@ What did not match, and why: Snapmaker 832 → 677 and Kids Dreams 82 → 63 aga
 | Counts between the two runs | | identical on 11 brands, Copper Pearl 535 → 537 |
 
 The one miss in run 2708 was the service refusing a lookup with `BudgetExceeded` (12 s left, 15 s needed after one GET) while the harness's back-to-back calls sat on the 12-a-minute limiter; at 20 a minute the same brand answered in the next run, and the refusal is the designed outcome, a `503` before the Code node's 30 s. Two brands' lifetime counts (Mamma Mia Covers 238, HolStrength 270) sit under the live counts their bundles carry (290, 343), which are older sheet values; the page view shows 0 inactive ads for both, so lifetime equals live for them today.
+
+## Measured against Brave
+
+`01 · Find The Founder` used Brave Search, plus a Haiku call to choose among its results, as the last step of its Facebook-page fallback, after the domain lookup, the website footer and the page Stage 0 had stored. Read on 23 Sep 2026 before the switch: in the 173 runs the telemetry table holds (16 to 23 Sep), Brave ran 7 times, for 0 qualified brands, against 467 brands served by the stored page. Its two retained runs (executions 2607 and 2715, 22 Sep, still on Adyntel): for notjustsundays.co it chose `facebook.com/NotJustSundays`, a podcast page with 0 ads; for blonderesin.com Haiku answered NONE.
+
+The eight brands of those two runs that had fallen through Adyntel's domain lookup, replayed through `brand --domain` from the laptop:
+
+| Domain | Old chain | In-house domain lookup |
+|---|---|---|
+| notjustsundays.co | Brave → podcast page, 0 ads | page 865741726622144 "Not Just Sundays", 954 live ads |
+| blonderesin.com | Brave → NONE | page 118393287932862, 2 |
+| publishorperish.games | stored page rejected (a reseller) → Needs Review | page 330052933516491, 80 |
+| probablyillegal.com | stored page → 53 | 53 |
+| solsoragames.com | stored page → 8 | 8 |
+| nookfan.com | stored page → 69 | 69 |
+| octagonstudio.com | stored page → 18 | 18, one miss retried |
+| homeandsprout.store | stored page → 1 | 1 |
+
+8 of 8 found, each on a page whose ads land on the brand's domain (`pick_page` accepts nothing else), 4 to 12 s each. Twenty-two older Needs Review rows whose reason came from the page lookup (11 to 22 Sep), replayed from the VPS: 20 of 22 found a page, 4 with 50 or more live ads (berissablinds.com 60, sweetmyo.com 69, wiseharvestfreezedriedfoods.com 63, yerbamagic.com 72), 9 with 1 to 49, 7 with 0; the two not found (engineerednutrition.us, healthyfamwell.com) have no ad landing on the domain. 01 does not retry a Needs Review row on its own; the status stays until someone resets it.
+
+So the Brave slot was replaced with no search at all (deployment.md, "Cutting the production workflow over"): a brand reaching it has already failed the in-house domain search, and it goes to Needs Review as a Brave NONE did. The one thing Brave could do that no Ad Library search can is surface a page whose ads carry no landing link at all, which `Resolve Ads Via Searched Page` trusts on a page-name match; no such success appears in the retained runs, and such a brand still lands in Needs Review rather than being dropped.
 
 ## Layout
 

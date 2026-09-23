@@ -20,7 +20,7 @@ Self-hosted Meta Ad Library keyword search and brand lookup with an HTTP API: on
 
 ## Platform
 
-This repo is a standalone ad-collection service behind the SmartLead brand-sourcing pipeline, running over its own HTTP API. It is the sibling of `trustpilot-reviews` and `reddit-reviews`, which serve their sites the same way, and all three stand in for the Apify actors the pipeline used to call. This one also stands in for the Adyntel API the pipeline's qualification and research workflows call per brand.
+This repo is a standalone ad-collection service behind the SmartLead brand-sourcing pipeline, running over its own HTTP API. It is the sibling of `trustpilot-reviews` and `reddit-reviews`, which serve their sites the same way, and all three stand in for the Apify actors the pipeline used to call. This one also stands in for the Adyntel API the pipeline's qualification and research workflows call per brand, and its domain lookup made the Brave web search the qualification workflow used to find a brand's Facebook page redundant (see [architecture.md](docs/architecture.md#measured-against-brave)).
 
 ## Quickstart
 
