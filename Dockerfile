@@ -23,5 +23,5 @@ USER scraper
 
 EXPOSE 8002
 HEALTHCHECK --interval=60s --timeout=5s --start-period=10s \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8002/health').status==200 else 1)"
+  CMD python -c "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8002') + '/health').status==200 else 1)"
 CMD ["uv", "run", "--no-sync", "facebook-ad-library", "serve"]
