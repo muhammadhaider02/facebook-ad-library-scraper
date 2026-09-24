@@ -148,3 +148,52 @@ def test_health_shape(client):
         assert key in h
     assert h["sessions"]["live"] == 0 and "sessions_minted" in h["sessions"] and "misses" in h["sessions"] and h["cache"]["entries"] == 0
     assert "doc_id" not in h
+
+
+# --------------------------------------------------------------------------- the throttle
+
+
+def _throttled(monkeypatch, count, fallback_ads=None, proxy="http://p:1"):
+    """A rendered page that reports `count` ads and serves none, which is what Meta does to a
+    throttled address: no 403, no 429, just an empty list above a correct total."""
+    from facebook_ad_library import api as m
+    from facebook_ad_library.scraper import SearchResult
+
+    monkeypatch.setattr(m, "search", lambda *a, **k: SearchResult(
+        query="kw", country="US", ads=[], attempts=1, misses=0, seconds=0.1, count=count))
+    monkeypatch.setattr(m, "proxy_url", lambda: proxy)
+    if fallback_ads is not None:
+        monkeypatch.setattr(m, "page_search", lambda *a, **k: {
+            "ads": fallback_ads, "advertisers": len(fallback_ads), "pages": 3, "empty_pages": 0,
+            "stopped_because": "Meta dropped the cursor (true end)", "decoded_bytes": 1000,
+            "seconds": 5.0, "next_cursor": None, "collation": "c", "truncated": False,
+            "session": {"label": "s", "requests_made": 1, "minted_now": False},
+        })
+    return m
+
+
+def test_a_withheld_payload_falls_back_to_the_proxy(monkeypatch, client):
+    ad = {"ad_archive_id": "1", "page_id": "9", "snapshot": {"page_id": "9", "caption": "brand.com"}}
+    _throttled(monkeypatch, count=50001, fallback_ads=[ad])
+    r = client.post("/facebook", json={"query": "running shoes", "country": "US"})
+    assert r.status_code == 200 and len(r.json()) == 1
+
+
+def test_a_withheld_payload_is_a_503_not_an_empty_success(monkeypatch, client):
+    """The retry guard. Answering "Meta has 1039 ads" with [] makes the caller reject the brand
+    and spend one of its three retries on a fault that was never the brand's."""
+    _throttled(monkeypatch, count=1039, proxy=None)
+    r = client.post("/facebook", json={"query": "running shoes", "country": "US"})
+    assert r.status_code == 503
+    assert "served none" in r.json()["error"]["message"]
+
+
+def test_a_keyword_with_genuinely_no_ads_is_still_an_empty_200(monkeypatch, client):
+    """count 0 is an honest empty answer and must not be confused with a withheld one, or every
+    niche keyword pays for the residential exit."""
+    called = []
+    m = _throttled(monkeypatch, count=0)
+    monkeypatch.setattr(m, "page_search", lambda *a, **k: called.append(1))
+    r = client.post("/facebook", json={"query": "nothing here", "country": "NZ"})
+    assert r.status_code == 200 and r.json() == []
+    assert not called, "don't proxy what isn't blocked"

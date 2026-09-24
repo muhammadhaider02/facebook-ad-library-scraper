@@ -42,7 +42,7 @@ from .config import settings
 from .graphql import page_search
 from .mapping import to_item
 from .proxy import proxy_url
-from .scraper import FacebookError, normalise_active_status, normalise_country, normalise_media_type, registrable_domain, search
+from .scraper import FacebookError, ScrapeBlocked, normalise_active_status, normalise_country, normalise_media_type, registrable_domain, search
 from .session import pool
 
 log = logging.getLogger("facebook_ad_library.api")
@@ -55,6 +55,8 @@ counters = {
     "adyntel_by_page_id": 0, "adyntel_by_url": 0, "adyntel_by_domain": 0, "adyntel_short_counts": 0, "busy": 0, "budget_exceeded": 0,
     # POST /facebook with `max_pages` > 1: the proxied GraphQL path. Bytes are what the proxy bills.
     "paged_requests": 0, "paged_pages": 0, "paged_decoded_bytes": 0,
+    # Searches where Meta reported ads and served none, and how many the proxied fallback saved.
+    "throttled_pages": 0, "throttled_recovered": 0,
 }
 _FAILURE_COUNTER = {
     "RateLimited": "rate_limited", "ResultsMissing": "results_missing", "ScrapeBlocked": "blocked",
@@ -284,6 +286,52 @@ async def facebook(req: SearchRequest):
         counters["in_flight"] -= 1
 
     page_items = [to_item(ad, result.query, result.country) for ad in result.ads]
+
+    # THE THROTTLE. Meta serves this address a correct total with no ad payload: no 403, no 429,
+    # nothing in the logs but an empty list. Measured 24 Sep 2026 on the VPS, "running shoes" US
+    # came back count=50001 ads=0 in 590 KB of page. A keyword with genuinely no ads answers
+    # count=0, so the two are told apart and only the withheld one pays for the residential exit.
+    # Don't proxy what isn't blocked.
+    if not page_items and result.count > 0 and proxy_url():
+        counters["throttled_pages"] += 1
+        log.warning(
+            "throttled %r %s: Meta reports %d ads and served none; retrying through the proxy",
+            query, country, result.count,
+        )
+        try:
+            run = await asyncio.to_thread(
+                page_search, query, country, status,
+                settings.fallback_max_pages, 0, settings.page_empty_tol, req.max_items,
+                settings.page_budget_s, None, None,
+            )
+        except FacebookError as e:
+            counters[_FAILURE_COUNTER.get(type(e).__name__, "failed")] += 1
+            log.warning("%s fallback %r %s -> %s: %s", e.status, query, country, type(e).__name__, e)
+            return JSONResponse(status_code=e.status, content=_error_body(e, e.status))
+        page_items = [to_item(ad, query, country) for ad in run["ads"]]
+        counters["throttled_recovered"] += 1 if page_items else 0
+        counters["paged_pages"] += run["pages"]
+        counters["paged_decoded_bytes"] += run["decoded_bytes"]
+        log.info(
+            "recovered %r %s: %d ad(s) from %d page(s), %dKB -> %s",
+            query, country, len(page_items), run["pages"], run["decoded_bytes"] // 1024,
+            run["stopped_because"],
+        )
+
+    # THE RETRY GUARD. Answering "Meta has 1039 ads" with an empty list is worse than failing:
+    # the caller cannot verify a brand it cannot see ads for, so it rejects the brand and spends
+    # one of its three retries on a fault that was never the brand's. Three of those and the row
+    # is abandoned for good. A 503 is a vendor failure, and vendor failures cost no retry.
+    if not page_items and result.count > 0:
+        counters["blocked"] += 1
+        e = ScrapeBlocked(
+            f"Meta reports {result.count} ads for {query!r} {country} and served none. This address "
+            "is being throttled; the ad payload is withheld without an error. Set SCRAPER_PROXY so "
+            "the search can fall back to the proxied path."
+        )
+        log.warning("503 %r %s -> withheld payload (count=%d)", query, country, result.count)
+        return JSONResponse(status_code=e.status, content=_error_body(e, e.status))
+
     cache.put(key, page_items)
     items = page_items[: req.max_items]
     counters["ok" if items else "empty"] += 1

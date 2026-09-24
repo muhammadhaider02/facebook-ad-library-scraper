@@ -145,6 +145,11 @@ class SearchResult:
     misses: int  # of those, pages without the results blob
     seconds: float
     session_swaps: int = 0
+    # What Meta says the search has, which is not always what it hands over. `count` far above
+    # `len(ads)` is the throttle's signature: the page renders, the total is right, the ad payload
+    # is withheld, and there is no 403 or 429 to notice. Measured on the VPS 24 Sep 2026:
+    # "running shoes" US came back with count 50001 and 0 ads, 590 KB of page, no error.
+    count: int = 0
 
 
 class PageView(NamedTuple):
@@ -508,14 +513,14 @@ def search(
     deadline = deadline if deadline is not None else started + settings.scrape_budget_s
 
     ads: list[dict] = []
-    attempts = misses = 0
+    attempts = misses = count = 0
     with pool.lease() as lease:
         slept = False
         while True:
             if attempts and time.time() + page_cost_s() > deadline:
                 raise ResultsMissing(f"no results in {attempts} attempt(s) for {query!r} {country} and no budget left for another")
             try:
-                page, page_ads = lease.session.fetch(query, country, status)
+                page, page_ads, html = lease.session.fetch_url(bootstrap_url(query, country, status))
             except RateLimited as e:
                 if not slept and time.time() + settings.rate_limit_sleep_s + page_cost_s() <= deadline:
                     slept = True
@@ -538,6 +543,11 @@ def search(
                 lease.replace()
                 continue
             attempts += 1
+            conn = find_results(html)
+            try:
+                count = int((conn or {}).get("count") or 0)
+            except (TypeError, ValueError):
+                count = 0
             if page is Page.MISS:
                 misses += 1
                 if misses > settings.ssr_retries:
@@ -556,4 +566,5 @@ def search(
         misses=misses,
         seconds=round(time.time() - started, 1),
         session_swaps=swaps,
+        count=count,
     )

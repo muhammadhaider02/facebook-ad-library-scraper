@@ -77,6 +77,10 @@ class Settings:
     # A run that stops here says `truncated` and hands back a cursor; the caller pages again with
     # it. 0 removes the ceiling, which is only ever right for a probe nothing is waiting on.
     page_budget_s: float = _env_float("PAGE_BUDGET_S", 240)
+    # Pages the proxied fallback may take when this address is being throttled. Small on purpose:
+    # the fallback exists to answer the search Stage 0 asked for, not to page deeply. 8 pages is
+    # ~80 ads, above Stage 0's 80-item ask, for roughly 20 KB of billed wire.
+    fallback_max_pages: int = _env_int("FALLBACK_MAX_PAGES", 8)
     # Lookup results live this long; short, so a re-run measures the site and not the cache.
     adyntel_cache_ttl_s: float = _env_float("ADYNTEL_CACHE_TTL_S", 600)
     cache_ttl_s: float = _env_float("CACHE_TTL_S", 86400)
