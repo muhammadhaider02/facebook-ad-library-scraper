@@ -39,6 +39,7 @@ from .adyntel_mapping import to_envelope
 from .brand import BrandResult, lookup
 from .cache import TTLCache
 from .config import settings
+from .graphql import page_search
 from .mapping import to_item
 from .proxy import proxy_url
 from .scraper import FacebookError, normalise_active_status, normalise_country, normalise_media_type, registrable_domain, search
@@ -52,6 +53,8 @@ counters = {
     # POST /adyntel
     "adyntel_requests": 0, "adyntel_found": 0, "adyntel_not_found": 0, "adyntel_cache_hits": 0, "adyntel_resolve_hits": 0,
     "adyntel_by_page_id": 0, "adyntel_by_url": 0, "adyntel_by_domain": 0, "adyntel_short_counts": 0, "busy": 0, "budget_exceeded": 0,
+    # POST /facebook with `max_pages` > 1: the proxied GraphQL path. Bytes are what the proxy bills.
+    "paged_requests": 0, "paged_pages": 0, "paged_decoded_bytes": 0,
 }
 _FAILURE_COUNTER = {
     "RateLimited": "rate_limited", "ResultsMissing": "results_missing", "ScrapeBlocked": "blocked",
@@ -86,6 +89,12 @@ class SearchRequest(BaseModel):
     country: str = Field(default="US", validation_alias=AliasChoices("country", "countries"))
     max_items: int = Field(default=80, validation_alias=AliasChoices("maxItems", "max_items", "max"))
     active_status: str = Field(default="active", validation_alias=AliasChoices("activeStatus", "active_status"))
+    # Deep paging. `max_pages` 1 (the default) keeps the rendered-page behaviour Stage 0 has always
+    # had, unproxied; anything higher switches to proxied GraphQL paging. See graphql.py for the
+    # measurements behind each stop.
+    max_pages: int = Field(default=1, validation_alias=AliasChoices("max_pages", "maxPages"))
+    novelty_stop: int = Field(default=25, validation_alias=AliasChoices("novelty_stop", "noveltyStop"))
+    empty_tol: int = Field(default=8, validation_alias=AliasChoices("empty_tol", "emptyTol"))
 
     @field_validator("country", mode="before")
     @classmethod
@@ -176,6 +185,52 @@ async def facebook(req: SearchRequest):
     except ValueError as e:
         counters["bad_request"] += 1
         return JSONResponse(status_code=400, content=_error_body(e, 400))
+
+    # DEEP PAGING. `max_pages > 1` asks for more than the rendered page's first 30 ads, which only
+    # GraphQL can give. That path is PROXIED and the ordinary one is not, deliberately: Meta
+    # withholds the ad payload from this address but still serves correct counts, so only the
+    # calls that need the ads themselves pay for the residential exit. Measured 24 Sep 2026:
+    # 4.8 KB/ad through GraphQL against 24.7 KB/ad for the rendered page.
+    if req.max_pages and req.max_pages > 1:
+        counters["paged_requests"] += 1
+        counters["in_flight"] += 1
+        try:
+            run = await asyncio.to_thread(
+                page_search, query, country, status,
+                req.max_pages, req.novelty_stop, req.empty_tol, req.max_items,
+            )
+        except FacebookError as e:
+            counters[_FAILURE_COUNTER.get(type(e).__name__, "failed")] += 1
+            log.warning("%s paged %r %s -> %s: %s", e.status, query, country, type(e).__name__, e)
+            return JSONResponse(status_code=e.status, content=_error_body(e, e.status))
+        except Exception as e:  # noqa: BLE001
+            counters["failed"] += 1
+            log.exception("unexpected failure paging %r %s", query, country)
+            return JSONResponse(status_code=500, content=_error_body(e, 500))
+        finally:
+            counters["in_flight"] -= 1
+
+        items = [to_item(ad, query, country) for ad in run["ads"]][: req.max_items]
+        counters["ok" if items else "empty"] += 1
+        counters["paged_pages"] += run["pages"]
+        counters["paged_decoded_bytes"] += run["decoded_bytes"]
+        log.info(
+            "ok paged %r %s ads=%d advertisers=%d pages=%d empty=%d %dKB %.0fs -> %s",
+            query, country, len(run["ads"]), run["advertisers"], run["pages"], run["empty_pages"],
+            run["decoded_bytes"] // 1024, run["seconds"], run["stopped_because"],
+        )
+        return JSONResponse(content=items, headers={
+            "X-Paged": "1",
+            "X-Pages": str(run["pages"]),
+            "X-Ads": str(len(run["ads"])),
+            "X-Advertisers": str(run["advertisers"]),
+            "X-Empty-Pages": str(run["empty_pages"]),
+            "X-Stopped-Because": run["stopped_because"],
+            "X-Decoded-Bytes": str(run["decoded_bytes"]),
+            "X-Session-Minted": "1" if run["session"]["minted_now"] else "0",
+            "X-Scrape-Seconds": str(run["seconds"]),
+            "X-Cache": "miss",
+        })
 
     # One GET answers every size up to the page's 30, so the cache holds the whole page and
     # `maxItems` is applied on the way out.
