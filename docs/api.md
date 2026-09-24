@@ -148,8 +148,17 @@ Video URLs are Meta CDN links signed for about four days; 02 fetches them in the
 |---|---|---|---|
 | `query` | `q`, `keyword` | | required; the keyword, sent as the site's own `keyword_unordered` search |
 | `country` | `countries` | `US` | two-letter code or `ALL`; a list is accepted and its first entry used; case-insensitive |
-| `maxItems` | `max_items`, `max` | `80` | clamped to 1–300, then capped by the page's ~30 |
+| `maxItems` | `max_items`, `max` | `80` | how many items come back, clamped to 1–5000. **Not a paging stop**: it sizes the response and nothing else |
 | `activeStatus` | `active_status` | `active` | `active`, `inactive` or `all` |
+| `max_pages` | `maxPages` | `1` | `1` keeps the rendered-page path, unproxied, and is what Stage 0 sends. Above `1` pages the search over GraphQL, which **requires** `FALLBACK_PROXY`; capped at `PAGE_MAX_PAGES` (150) |
+| `max_ads` | `maxAds` | `0` | how many ads are worth paging for. `0` leaves the stop to the page, novelty and empty limits. This is the target `maxItems` must not be confused with |
+| `novelty_stop` | `noveltyStop` | `25` | pages with no new advertiser that end the search |
+| `empty_tol` | `emptyTol` | `8` | blank pages in a row that end it. Meta serves blanks mid-run; stopping at the first cost 135 ads and 25 advertisers on one keyword |
+| `budget_s` | `budgetS` | `PAGE_BUDGET_S` | seconds this one call may take, so it answers inside the caller's node timeout. `0` removes the ceiling, for a probe nothing is waiting on |
+| `cursor` | `next_cursor`, `nextCursor` | | resume state from a previous call's `X-Next-Cursor` |
+| `collation` | `collation_token`, `collationToken` | | from `X-Collation`. Send it **with** the cursor: Meta collates duplicates against it, and a fresh token re-collates the search mid-run |
+
+A search that is refused by the throttle recovers on its own; none of the paging fields are needed for that. They exist for a caller that wants depth deliberately. See [architecture.md](architecture.md#the-throttle).
 
 ## Response items
 
@@ -181,7 +190,20 @@ One object per ad, in the order the Ad Library shows them. Every key is present 
 | `X-Misses` | of those, pages that came without their results and were retried |
 | `X-Short-Counts` | of those, pages whose total was below the ads on them and were refetched; Meta now and then serves the count unfilled (`count: 0` above 30 ads, seen 23 Sep 2026). When every attempt is short, `number_of_ads` is the number of ads on the page, a floor, never 0 |
 | `X-Session-Swaps` | `1` when the first session was refused and a fresh one finished the search |
+| `X-Direct-Skipped` | `1` when the direct GET was skipped because Meta was recently withholding, so the answer came from the proxied path. The page figures above then read `0`: there was no rendered page |
 | `X-Cache` | `hit` or `miss` |
+
+On a paged answer (`max_pages > 1`) these are sent as well:
+
+| Header | Meaning |
+|---|---|
+| `X-Paged` | `1` |
+| `X-Pages`, `X-Ads`, `X-Advertisers`, `X-Empty-Pages` | what the run covered and found |
+| `X-Stopped-Because` | which limit ended it, in the run's own words: `Meta dropped the cursor (true end)`, `hit the N-page cap`, `ran out of the Ns budget after N page(s)`, `N empty pages in a row`, `N pages with no new advertiser`, `reached the N-ad target` |
+| `X-Truncated` | `1` when Meta still has more, `0` when it dropped the cursor and there is nothing left to ask for |
+| `X-Next-Cursor`, `X-Collation` | resume state; send **both** back to continue the same search |
+| `X-Decoded-Bytes` | what the run decoded. The proxy bills the wire, which is roughly 20% of this - one measurement, not a rate card |
+| `X-Session-Minted` | `1` when this call paid for a fresh GraphQL session (~0.9 MB pinned, ~21 MB unpinned) |
 
 ## Errors
 
@@ -194,6 +216,7 @@ One object per ad, in the order the Ad Library shows them. Every key is present 
 | `400` | `ValueError` | no `query`, a country that is not two letters or `ALL`, an unknown `activeStatus` or `media_type`; on `/adyntel`, none of `page_id`, `facebook_url`, `company_domain`, or a non-numeric page id |
 | `401` | `HTTPException` | missing or wrong bearer token |
 | `503` | `ScrapeBlocked` | the challenge would not clear, a `403` without it, a `400` error page after it (TLS fingerprint rejected), two dead sessions in a row, or a login wall on the plugin or profile page twice |
+| `503` | `ScrapeBlocked` (withheld) | **Meta reported ads and served none, and the recovery could not get them either.** Deliberately not an empty `200`: the caller verifies a brand from where its ads land, so an empty list makes it reject the brand and spend one of its three retries on a fault that was never the brand's. The message names the count and says whether the fallback proxy was tried |
 | `503` | `RateLimited` | HTTP `429` again after the one sleep, on a fresh session too (a lookup does not sleep: it swaps) |
 | `503` | `ResultsMissing` | every attempt inside the budget came back without the results blob |
 | `503` | `BudgetExceeded` | `/adyntel` only: the next GET could not finish inside `BRAND_BUDGET_S`, priced with the limiter's next free slot |

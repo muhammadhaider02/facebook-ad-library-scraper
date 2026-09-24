@@ -44,6 +44,8 @@ The Ad Library is a logged-out React site. When its search page is requested, Me
 
 Why not the GraphQL endpoint the frontend uses to scroll past the first page: Meta answers `POST /api/graphql/` from datacenter addresses (Hostinger, GitHub's runners) with error `1675004` on the very first call of a fresh session, keyed on the source address, while it serves the page to the same address without a throttle. From a residential address it gave about 10 ads a call regardless of the `first` asked for, so three calls, which is what the first version of this service made, gave the same 30 the page gives in one. Nothing is lost. The measurements behind that are below.
 
+**That held until 24 Sep 2026, when Meta began withholding the ad payload from the VPS address entirely.** The page still renders, the total is still correct, and `edges` is empty. GraphQL is now the recovery path, reached through a residential proxy and only for the requests that were actually refused - see [The throttle](#the-throttle) below.
+
 ## How a brand lookup is made
 
 The same page, opened for one advertiser instead of a keyword: `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&view_all_page_id=<page id>&search_type=page&media_type=all`, the URL the site's own "See all ads" link opens. Measured 22 Sep 2026 from the laptop and from the VPS, with identical numbers from both (the pages are under `diag-out/adyntel-probe/` on the laptop and `/opt/fb-diag/adyntel-probe-vps/` on the VPS):
@@ -74,6 +76,76 @@ The resolver ladder, in `brand.py`:
 Why the domain search works as well as it does: the Ad Library shows every ad's landing domain as its `caption` (the bare domain, `probablyillegal.com`), so a keyword search on the domain is close to an exact "ads landing here" query, and `pick_page` only has to choose among the advertisers whose ads land on it. A brand-**name** keyword search is not a substitute and is not offered: Meta's `keyword_unordered` is fuzzy on words and does not index page names. Measured 23 Sep 2026 with `search --country ALL`: "Home and Sprout" returned 30 ads from 11 unrelated pages and not the brand's own page (which the domain search finds, 1 live ad); "Solar Titans" returned the brand's page last of 29 and took 44 s on a single GET; "Probably Illegal Game" 5 owned ads among 30 from 16 pages.
 
 Measured from the VPS after the 0.3.0 deploy, 22 Sep 2026: every resolver path answered from the VPS address exactly as from the laptop (page id 2.3 s, vanity URL through the plugin 3.9 s, domain 6.6 s, video 6.1 s with one miss retried), the profile page was served too, and a burst of 20 page views on one session at 12 a minute took 96 s with 20 `200`s, one challenge on the first GET, no misses and no throttle.
+
+## The throttle
+
+On 24 Sep 2026 Meta stopped giving this address the ads. Not with a `403`, not with a `429`, and not by failing: the page renders, the total is right, and `edges` is empty.
+
+```
+search  'running shoes' US        count=50001   ads=0   590 KB of page   no error
+brand   775991435791863           count=1039    ads=0   page name "Shakti Mat"   no error
+```
+
+Production served **722 empty results out of 1,320 requests** this way before it was found, and `ok` had not moved in over a hundred searches. Nothing in the logs said so, because from the service's point of view every one of those was a successful GET of a keyword with no inventory.
+
+It is the address, not the code or the session. Proven by running two containers from the same image in the same minute: the VPS address returned 0 ads, a residential exit returned 30. Thirteen sessions had rotated normally; `rate_limited` and `blocked` were both 0.
+
+### Why it is worse than an outage
+
+An empty list is a *valid answer*. Stage 0 reads it as "this keyword has no inventory" and retires the keyword. Workflow 01 reads it as "this brand's ads cannot be seen", fails ownership verification, rejects the brand and **spends one of its three retries** - on a fault that was never the brand's. Three of those and the row is Abandoned permanently. When this was found, 11 of 11 brands in one execution sat at `Retry Count: 2`, and 749 rows were already exhausted.
+
+So the service must never answer a withheld payload as an empty success.
+
+### How a request recovers
+
+1. **The direct GET happens first, free**, on the VPS address as always.
+2. **The two empties are told apart by the total.** `count: 0` is an honest answer and returns `200 []` without touching the proxy. `count > 0` with no ads is the throttle's signature.
+3. **Only a withheld request pays for the residential exit.** Don't proxy what isn't blocked - the rendered page is ~1 MB, and routing all of it through a proxy costs a megabyte per call for pages already known to be empty.
+4. **The recovery differs by endpoint.** A search re-asks over GraphQL, which answers the same query at ~7 KB an ad against the page's 24.7 KB, capped at `FALLBACK_MAX_PAGES`. A brand lookup re-fetches the same rendered page through the proxy, because a page view has no paging to do.
+5. **If the ads are still missing, the answer is `503`.** A vendor failure costs the caller no retry; an empty success costs it one.
+
+### Skipping the GET that is known to fail
+
+While the throttle is on it is total, not sampled: 24 of the 24 searches with ads to give came back empty in one sourcing cycle. Re-making the direct GET each time costs ~3 s and ~1 MB to be told what the previous search established - about two minutes and 40 MB across a 40-keyword cycle.
+
+One withheld page therefore suppresses the direct GET for `THROTTLE_MEMORY_S`. It **expires rather than latching**, because while it is set every search pays the proxy: one direct GET per window is the price of noticing Meta has stopped, and any direct page that does carry ads clears it at once.
+
+### Measured: depth does not pay
+
+The obvious response to a 30-ad ceiling is to page deeper. It was tried, and the tail is worth very little. Advertisers per page, across 10 keywords paged to Meta's true end on 24 Sep:
+
+| Keyword | Pages | Advertisers | Per page |
+|---|---|---|---|
+| toddler balance bike | 6 | 26 | **4.33** |
+| reusable makeup remover pads | 1 | 3 | 3.00 |
+| portable neck fan | 13 | 32 | 2.46 |
+| red light therapy mask | 108 | 194 | 1.80 |
+| magnesium glycinate gummies | 37 | 64 | 1.73 |
+| collagen coffee creamer | 41 | 52 | 1.27 |
+| grounding sheets | 60 | 62 | 1.03 |
+| silk sleep bonnet | 59 | 30 | 0.51 |
+| beard growth kit | 89 | 42 | 0.47 |
+| posture corrector device | 41 | 16 | **0.39** |
+
+The first pages carry distinct advertisers and the tail re-samples the same handful - `beard growth kit` spent 89 pages to find 42, at 18.7 ads each.
+
+Then it was tried in production. `FALLBACK_MAX_PAGES` was raised from 8 to 20, cycle 3951 against cycle 3931:
+
+| | 8 pages | 20 pages |
+|---|---|---|
+| Pages | 64 | 169 |
+| Decoded | 6.62 MB | 17.32 MB |
+| Run time | 6m30s | 13m47s |
+| `brands_new` | 25 | **25** |
+| `brands_verified` | 20 | **16** |
+
+2.6x the proxy spend and twice the wall clock for no additional new brands. The keywords differ between cycles so some of that is luck, but it agrees with the table above and with 00's own `Select Keyword And Country` node, which concluded the same from exec 1014: *"the lever is MORE KEYWORDS PER RUN, not more ads per keyword."*
+
+Three independent measurements. The cap is 8.
+
+### What `max_items` is not
+
+`max_items` sizes the response. It is **not** a paging stop, and conflating the two has caused the same bug twice: passed as the paging ad target, a search ends as soon as it has that many ads, so a 150-page cap silently became 9 pages. `max_ads` is the target and defaults to 0, meaning the page cap decides.
 
 ## Why no browser, and why Chrome TLS
 
@@ -248,7 +320,16 @@ So the Brave slot was replaced with no search at all (deployment.md, "Cutting th
 | Variable | Default | Meaning |
 |---|---|---|
 | `API_TOKEN` | *(empty)* | bearer token callers must send; empty disables auth, for local testing only |
-| `SCRAPER_PROXY` | *(empty)* | proxy for every request, as a URL or `host:port:user:pass`; not needed; rotating gateway ports (Decodo 7000, DataImpulse 823) are refused at startup |
+| `SCRAPER_PROXY` | *(empty)* | proxy for **every** request, as a URL or `host:port:user:pass`. Leave empty: the direct path is free and the rendered page is ~1 MB. Rotating gateway ports (Decodo 7000, DataImpulse 823) are refused at startup |
+| `FALLBACK_PROXY` | *(empty)* | proxy for the **recovery** path only - the searches and lookups Meta answers with a total and no ads. Set this, leave `SCRAPER_PROXY` empty, and only refused calls are billed. Falls back to `SCRAPER_PROXY` |
+| `FALLBACK_MAX_PAGES` | `8` | pages a recovered search may take. Raising it buys the worst pages there are; see [The throttle](#the-throttle) |
+| `THROTTLE_MEMORY_S` | `600` | how long one withheld page suppresses the direct GET. Expires rather than latching: while it is set every search pays the proxy |
+| `PAGE_BUDGET_S` | `240` | wall-clock ceiling on one paged call, so it answers inside the caller's node timeout. A run that stops here returns `X-Truncated: 1` with a cursor |
+| `PAGE_MAX_PAGES` | `150` | ceiling on an explicit `max_pages` request; also the hard ceiling in code |
+| `PAGE_NOVELTY_STOP` | `25` | pages with no new advertiser that end a paged search |
+| `PAGE_EMPTY_TOL` | `8` | blank pages in a row that end a paged search. Stopping at the first one cost 135 ads and 25 advertisers on one keyword |
+| `FB_DOC_ID` | *(empty)* | persisted-query id for `AdLibrarySearchPaginationQuery`. Discovered from the page bundles when empty, which costs ~21 MB a mint; pinning it costs ~0.9 MB |
+| `FB_VARIABLES_JSON` | *(empty)* | JSON object merged over the GraphQL variables, for a schema change that needs a field the service does not send |
 | `FB_IMPERSONATE` | `chrome` | `curl_cffi` TLS profile |
 | `REQUEST_TIMEOUT_S` | `30` | per-request timeout |
 | `SSR_RETRIES` | `2` | extra GETs when the search page comes without its results blob |

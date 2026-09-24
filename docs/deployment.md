@@ -118,6 +118,48 @@ The production workflows are not edited. The service is exercised in the n8n wor
 
 Two more lanes, added 22 Sep 2026 for the Adyntel replacement, each with a sticky note carrying its run protocol: **`Start ADY 01 Test`** (`ADY 01 Brand List` → `Loop ADY 01` → `In-house: Ad Count (domain)`, a clone of 01's HTTP node, → `In-house: Ad Count (page)`, the same brand by stored page id or URL → `Measure ADY 01` → `Collect ADY 01`) and **`Start ADY 02 Test`** (`ADY 02 Brand List` → `Loop ADY 02` → `In-house: Ad Creative` → `Analyse ADY 02` and `Collect Video Ads (in-house)`, 02's nodes verbatim but for the loop name and the URL → `Check Clip URL`, a HEAD per clip → `Measure ADY 02` → `Collect ADY 02`). The brand lists are literals built from 01's executions and the two data tables; `ADY 01 Brand List` has a `LIMIT` constant (12 for a canary, 0 for the whole list). Runs 2705, 2713 (lane 01) and 2708, 2719 (lane 02) are the ones in architecture.md, [Measured against Adyntel](architecture.md#measured-against-adyntel). Read a run's single `Collect ADY 0X` item; its `per_brand` array holds the rows.
 
+## The throttle, and the proxy that answers it
+
+**What happened, 24 Sep 2026.** Meta stopped serving the ad payload to the VPS address. The page rendered, the total was correct, `edges` was empty, and there was no error of any kind. Production returned 722 empty results out of 1,320 requests before it was noticed, because every one of them looked like a keyword with no inventory. The mechanics are in [architecture.md](architecture.md#the-throttle); this is what to do about it.
+
+**The setting that fixes it.** One credential, in the recovery slot, not the global one:
+
+```dotenv
+SCRAPER_PROXY=                       # leave EMPTY - the direct path stays free
+FALLBACK_PROXY=host:port:user:pass   # only refused calls are billed
+FB_DOC_ID=24922295957467452          # pin it; discovery costs ~21 MB a mint
+```
+
+Setting `SCRAPER_PROXY` instead also works and was the first fix applied, but it proxies **every** request including the ~1 MB rendered page: measured at ~190 MB/day against ~31 MB/day for the split. Use the split.
+
+`.env` is read at container start, so this needs `docker compose up -d`, not a restart of the process inside. Check `/health` is idle (`in_flight: 0`) first, and keep a dated copy of `.env` before editing.
+
+**Verifying it took.** From the VPS, two commands, about ten seconds:
+
+```bash
+docker exec facebook-ad-library python -c "import json,urllib.request as u; d=json.load(u.urlopen('http://127.0.0.1:8002/health')); print(d['proxy'], d['fallback_proxy'])"
+# expect: False True   - direct path free, recovery armed
+
+docker compose exec scraper uv run --no-sync facebook-ad-library brand --page-id 775991435791863 --summary
+# expect: count=1039 ads=30.   count=1039 ads=0 means the recovery is not working.
+```
+
+Then watch one real cycle. The log says plainly what it did:
+
+```
+throttled 'full grain leather belt' CA: Meta reports 476 ads and served none; retrying through the proxy
+recovered 'full grain leather belt' CA: 81 ad(s) from 9 page(s), 464KB -> reached the 80-ad target
+domain search for markhalston.com: recovered 30 ad(s) through the fallback proxy
+```
+
+The pass bar is `throttled_recovered == throttled_pages` and `brand_recovered == brand_withheld` on `/health`. A gap means searches are answering `503`.
+
+**What it costs.** Measured on sourcing cycle 3931, 40 keywords: 24 throttled, 24 recovered, 64 pages, 6.62 MB decoded, ~1.3 MB billed wire, 6m30s. Roughly **31 MB/day** at the hourly schedule. The proxy bills the wire and Meta sends this zstd-compressed with no `Content-Length`, so the wire figure cannot be read off the response - 20% of decoded is one measurement from the proxy balance, not a rate card. Check the balance against it.
+
+**Rolling it back.** Empty `FALLBACK_PROXY` and recreate. The service then answers withheld searches `503` instead of recovering them - which is the correct behaviour, not a failure: it costs the caller no retry. Brands stop being qualified until the throttle lifts or the proxy comes back.
+
+**When Meta stops.** A direct page that carries ads clears the memory at once and the service returns to the free path by itself, one probe per `THROTTLE_MEMORY_S`. Nothing needs doing. `/health` `throttle.active` going `false` and staying there is the signal, and `FALLBACK_PROXY` can then be emptied to remove the last of the spend.
+
 ## What to watch
 
 | Signal | Meaning |
@@ -128,7 +170,12 @@ Two more lanes, added 22 Sep 2026 for the Adyntel replacement, each with a stick
 | `/health` `rate_limited` rising | a `429` on the page, which has not been seen; lower `RATE_LIMIT_PER_MIN` |
 | `/health` `session_dead` rising | sessions are being refused mid-life; check `retired_by_reason` and the session ages, and lower `SESSION_MAX_REQUESTS` |
 | `/health` `sessions.challenges` rising faster than `sessions_minted` | Meta is re-challenging live sessions; the service clears it, but it is a change worth noting |
-| `/health` `empty` rising across many keywords | either the keywords are bad or Meta is answering empty pages; a real empty carries an empty results blob, so compare with `sessions.misses` |
+| `/health` `empty` rising across many keywords | either the keywords are bad or Meta is answering empty pages; a real empty carries an empty results blob, so compare with `sessions.misses`. **If `ok` stops moving while `requests` climbs, suspect the throttle** and check `throttled_pages` |
+| `/health` `throttled_pages` rising | Meta is withholding the ad payload from this address. Expected while the throttle is on; the number to watch is the one below |
+| `/health` `throttled_recovered` **below** `throttled_pages` | the recovery is not working. Check `FALLBACK_PROXY` is set and the balance is not spent; a gap here means searches are answering `503` and brands are not being qualified |
+| `/health` `brand_withheld` without `brand_recovered` | the same for brand lookups, and the more damaging of the two: without landing domains 01 cannot verify ownership |
+| `/health` `throttle.active` `true` for hours with `direct_gets_skipped` climbing | normal while throttled. If it is `true` and `observations` is 1, the memory may be holding on a single stale observation - it expires after `THROTTLE_MEMORY_S`, so give it that long before acting |
+| `/health` `paged_decoded_bytes` climbing faster than expected | this is what the proxy bills, roughly 20% of it on the wire. ~33 KB a keyword at `FALLBACK_MAX_PAGES=8`; four times that at 20 |
 | `/health` `adyntel_not_found` a large share of `adyntel_requests` | the resolver, not Meta: read the log lines (`not-found adyntel company_domain=… (no ad among the 30 for … lands on it)`) and check the brands by hand with `brand --domain` |
 | `/health` `sessions.plain_blocked` or `plain_dead` rising | the page plugin or the profile page is being refused to this address while the Ad Library page is not; set `BRAND_PROFILE_FALLBACK=false` if it is on, and send `page_id` from the stored table where the workflow can |
 | `/health` `budget_exceeded` or `busy` rising | lookups are queueing behind each other or behind the limiter; either the callers overlap more than `MAX_CONCURRENCY` allows or `RATE_LIMIT_PER_MIN` is too low for the burst. `X-Queue-Seconds` on the responses says which |
