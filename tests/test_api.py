@@ -238,3 +238,27 @@ def test_a_direct_page_with_ads_puts_the_direct_path_back(monkeypatch, client):
 
     assert client.post("/facebook", json={"query": "a", "country": "US"}).status_code == 200
     assert not throttle.active(), "a page that carried ads means the throttle has stopped"
+
+
+def test_the_recovery_pages_to_the_cap_not_to_max_items(monkeypatch, client):
+    """`max_items` sizes the response; it must not also stop the paging. Conflating them capped
+    every recovery at the caller's item count - 80 ads, reached on page 9 - so the page cap never
+    applied. Measured in cycle 3931: every broad keyword stopped at 9 pages on the 80-ad target."""
+    from facebook_ad_library import api as m
+    from facebook_ad_library.scraper import SearchResult
+
+    seen = {}
+
+    def fake_page_search(query, country, status, max_pages, novelty, empty_tol, max_ads, *a, **k):
+        seen["max_pages"], seen["max_ads"] = max_pages, max_ads
+        return {"ads": [], "advertisers": 0, "pages": 3, "empty_pages": 0, "stopped_because": "x",
+                "decoded_bytes": 10, "seconds": 1.0, "next_cursor": None, "collation": "c",
+                "truncated": False, "session": {"label": "s", "requests_made": 1, "minted_now": False}}
+
+    monkeypatch.setattr(m, "search", lambda *a, **k: SearchResult(
+        query="kw", country="US", ads=[], attempts=1, misses=0, seconds=0.1, count=900))
+    monkeypatch.setattr(m, "fallback_proxy_url", lambda: "http://p:1")
+    monkeypatch.setattr(m, "page_search", fake_page_search)
+
+    client.post("/facebook", json={"query": "a", "country": "US", "maxItems": 80})
+    assert seen["max_ads"] == 0, "no ad target unless one is asked for; the page cap decides"

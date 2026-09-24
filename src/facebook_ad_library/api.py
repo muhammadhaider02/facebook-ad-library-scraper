@@ -322,7 +322,7 @@ async def facebook(req: SearchRequest):
         try:
             run = await asyncio.to_thread(
                 page_search, query, country, status,
-                settings.fallback_max_pages, 0, settings.page_empty_tol, req.max_items,
+                settings.fallback_max_pages, 0, settings.page_empty_tol, req.max_ads,
                 settings.page_budget_s, None, None,
             )
         except FacebookError as e:
