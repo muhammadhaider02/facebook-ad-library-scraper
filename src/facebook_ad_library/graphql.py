@@ -510,8 +510,19 @@ def page_search(
     novelty_stop: int = 25,
     empty_tol: int = 8,
     max_ads: int = 0,
+    budget_s: float = 0,
+    cursor: str | None = None,
+    collation: str | None = None,
 ) -> dict:
-    """Page one keyword and report what it cost. An ordinary empty result is not an error."""
+    """Page one keyword and report what it cost. An ordinary empty result is not an error.
+
+    Two things let a caller with a deadline use this at all. `budget_s` stops the run before it
+    starts a page it cannot finish, and the answer says so rather than being cut off by whatever
+    is waiting on it: measured 24 Sep 2026, 150 pages of `skin care` took 783 s against Stage 0's
+    300 s node timeout. `cursor` and `collation` then resume exactly where that answer stopped,
+    so the depth is reached across several calls instead of one long one. The collation token
+    must be carried back: Meta collates duplicates against it, and a fresh one would re-collate
+    the whole search mid-run."""
     started = time.time()
     country = normalise_country(country)
     status = normalise_active_status(active_status)
@@ -521,8 +532,8 @@ def page_search(
     s = _live_session(query, country, status)
     before_bytes = s.decoded_bytes
     minted_now = s.requests_made == 0
-    collation = str(uuid.uuid4())
-    cursor = None
+    collation = collation or str(uuid.uuid4())
+    deadline = started + float(budget_s) if budget_s else 0.0
     ads: list[dict] = []
     seen_ads: set[str] = set()
     advertisers: set[str] = set()
@@ -531,6 +542,14 @@ def page_search(
     stopped = f"hit the {max_pages}-page cap"
 
     for n in range(1, max_pages + 1):
+        # 0. Stop before starting a page the budget cannot pay for. The estimate is this run's own
+        # mean page time (which already includes the pacing sleep) plus a fifth, so a search that
+        # has been slow is judged on what it has actually been costing, not on a guess.
+        if deadline and pages:
+            need = (sum(p["seconds"] for p in pages) / len(pages)) * 1.2
+            if time.time() + need > deadline:
+                stopped = f"ran out of the {int(budget_s)}s budget after {len(pages)} page(s)"
+                break
         t0, b0 = time.time(), s.decoded_bytes
         page_ads, cursor = s.search_page(query, country, cursor, collation, 30, gql_status)
         new = set()
@@ -578,7 +597,11 @@ def page_search(
         "query": query, "country": country, "active_status": status,
         "ads": ads, "advertisers": len(advertisers), "pages": len(pages),
         "empty_pages": sum(1 for p in pages if p["ads"] == 0), "stopped_because": stopped,
-        "caps": {"max_pages": max_pages, "novelty_stop": novelty_stop, "empty_tol": empty_tol},
+        "caps": {"max_pages": max_pages, "novelty_stop": novelty_stop, "empty_tol": empty_tol,
+                 "budget_s": float(budget_s)},
+        # A live cursor means Meta still has more. It is the whole resume state together with the
+        # collation token, and it is None only at the true end, where resuming is meaningless.
+        "next_cursor": cursor, "collation": collation, "truncated": cursor is not None,
         "decoded_bytes": s.decoded_bytes - before_bytes,
         "session": {"label": s.label, "requests_made": s.requests_made, "minted_now": minted_now},
         "seconds": round(time.time() - started, 1), "pages_detail": pages,

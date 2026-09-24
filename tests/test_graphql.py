@@ -6,7 +6,7 @@ it cost 135 ads and 25 advertisers. These tests are what stop that regressing.
 """
 
 import pytest
-from conftest import set_frozen
+from conftest import Clock, set_frozen
 
 from facebook_ad_library import graphql as g
 from facebook_ad_library.config import settings
@@ -280,3 +280,84 @@ def test_a_bad_bundle_does_not_sink_the_mint(monkeypatch):
     monkeypatch.setattr("facebook_ad_library.session.CurlTransport", lambda **kw: T())
     set_frozen(settings, "doc_id", "")
     assert g.GraphSession()._discover_doc_id(page) == "777"
+
+
+# --------------------------------------------------------------------------- budget and resume
+
+
+class SlowStub(StubSession):
+    """A stub whose pages cost real recorded time, so the budget guard has something to judge."""
+
+    def __init__(self, script, seconds_per_page, clock):
+        super().__init__(script)
+        self.spp = seconds_per_page
+        self.clock = clock
+
+    def search_page(self, query, country, cursor, collation, first=30, active_status="ACTIVE"):
+        self.clock.advance(self.spp)
+        return super().search_page(query, country, cursor, collation, first, active_status)
+
+
+@pytest.fixture
+def slow(monkeypatch):
+    def install(script, seconds_per_page):
+        clock = Clock()
+        monkeypatch.setattr(g.time, "time", clock)
+        s = SlowStub(script, seconds_per_page, clock)
+        monkeypatch.setattr(g, "_live_session", lambda *a, **k: s)
+        return s
+
+    return install
+
+
+def test_the_budget_stops_before_a_page_it_cannot_pay_for(slow):
+    """783 s for 150 pages against Stage 0's 300 s node timeout is what this exists for."""
+    s = slow([([ad(n, page=n)], "c") for n in range(1, 200)], seconds_per_page=10)
+    r = g.page_search("kw", max_pages=150, novelty_stop=0, budget_s=100)
+    # 10s a page plus the 20% margin means the 9th page is the last one that fits under 100s.
+    assert r["pages"] == 9, r["stopped_because"]
+    assert r["stopped_because"] == "ran out of the 100s budget after 9 page(s)"
+    assert r["truncated"] is True and r["next_cursor"] == "c"
+
+
+def test_no_budget_runs_to_a_real_stop(slow):
+    slow([([ad(n, page=n)], "c") for n in range(1, 40)], seconds_per_page=10)
+    r = g.page_search("kw", max_pages=12, novelty_stop=0, budget_s=0)
+    assert r["pages"] == 12 and r["stopped_because"] == "hit the 12-page cap"
+
+
+def test_a_search_that_truly_ended_hands_back_no_cursor(stub):
+    stub([([ad(1)], "c1"), ([ad(2)], None)])
+    r = g.page_search("kw", max_pages=150)
+    assert r["truncated"] is False and r["next_cursor"] is None
+
+
+def test_a_resumed_call_starts_at_the_given_cursor_and_keeps_the_collation(stub):
+    s = stub([([ad(3)], "c4"), ([ad(4)], None)])
+    r = g.page_search("kw", max_pages=150, cursor="c3", collation="COL-1")
+    assert s.asked == ["c3", "c4"], "the resumed call must not start from the beginning"
+    assert r["collation"] == "COL-1", "Meta collates against this; a fresh one re-collates mid-search"
+
+
+def test_a_first_call_mints_its_own_collation_token(stub):
+    stub([([ad(1)], None)])
+    r = g.page_search("kw", max_pages=150)
+    assert r["collation"] and r["collation"] != "COL-1"
+
+
+def test_the_two_halves_of_a_split_search_cover_what_one_long_call_would(stub):
+    """The point of the handoff: depth reached across calls, not in one 13-minute request."""
+    whole = [([ad(n, page=n)], f"c{n}") for n in range(1, 7)] + [([ad(7, page=7)], None)]
+    stub(list(whole))
+    one = g.page_search("kw", max_pages=150, novelty_stop=0)
+
+    stub(list(whole[:3]))
+    first = g.page_search("kw", max_pages=3, novelty_stop=0)
+    assert first["truncated"] is True
+    stub(list(whole[3:]))
+    second = g.page_search("kw", max_pages=150, novelty_stop=0,
+                           cursor=first["next_cursor"], collation=first["collation"])
+    assert second["truncated"] is False
+
+    ids = lambda r: [a["ad_archive_id"] for a in r["ads"]]  # noqa: E731
+    assert ids(first) + ids(second) == ids(one)

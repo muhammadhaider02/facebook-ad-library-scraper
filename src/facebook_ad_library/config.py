@@ -72,6 +72,11 @@ class Settings:
     page_max_pages: int = _env_int("PAGE_MAX_PAGES", 150)
     page_novelty_stop: int = _env_int("PAGE_NOVELTY_STOP", 25)
     page_empty_tol: int = _env_int("PAGE_EMPTY_TOL", 8)
+    # Wall-clock ceiling for ONE paged call, so it answers inside the caller's node timeout instead
+    # of being cut off by it. 150 pages measured 783 s, which Stage 0's 300 s node would never see.
+    # A run that stops here says `truncated` and hands back a cursor; the caller pages again with
+    # it. 0 removes the ceiling, which is only ever right for a probe nothing is waiting on.
+    page_budget_s: float = _env_float("PAGE_BUDGET_S", 240)
     # Lookup results live this long; short, so a re-run measures the site and not the cache.
     adyntel_cache_ttl_s: float = _env_float("ADYNTEL_CACHE_TTL_S", 600)
     cache_ttl_s: float = _env_float("CACHE_TTL_S", 86400)

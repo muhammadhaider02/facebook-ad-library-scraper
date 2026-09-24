@@ -99,6 +99,13 @@ class SearchRequest(BaseModel):
     # exists for Apify parity. Conflating them caps a 150-page run at the `max_items` clamp and the
     # page cap is never reached. 0 leaves the stop to the page, novelty and empty limits.
     max_ads: int = Field(default=0, validation_alias=AliasChoices("max_ads", "maxAds"))
+    # Resume state, handed back by the previous call as X-Next-Cursor and X-Collation. Both or
+    # neither: a cursor resumed under a fresh collation token makes Meta re-collate mid-search.
+    cursor: str | None = Field(default=None, validation_alias=AliasChoices("cursor", "next_cursor", "nextCursor"))
+    collation: str | None = Field(default=None, validation_alias=AliasChoices("collation", "collation_token", "collationToken"))
+    # Seconds this one call may take. Defaults to PAGE_BUDGET_S so a caller that sends nothing is
+    # still protected from the 783 s search; 0 removes the ceiling for a probe.
+    budget_s: float | None = Field(default=None, validation_alias=AliasChoices("budget_s", "budgetS"))
 
     @field_validator("country", mode="before")
     @classmethod
@@ -204,6 +211,8 @@ async def facebook(req: SearchRequest):
             run = await asyncio.to_thread(
                 page_search, query, country, status,
                 req.max_pages, req.novelty_stop, req.empty_tol, req.max_ads,
+                settings.page_budget_s if req.budget_s is None else req.budget_s,
+                req.cursor, req.collation,
             )
         except FacebookError as e:
             counters[_FAILURE_COUNTER.get(type(e).__name__, "failed")] += 1
@@ -221,9 +230,10 @@ async def facebook(req: SearchRequest):
         counters["paged_pages"] += run["pages"]
         counters["paged_decoded_bytes"] += run["decoded_bytes"]
         log.info(
-            "ok paged %r %s ads=%d advertisers=%d pages=%d empty=%d %dKB %.0fs -> %s",
+            "ok paged %r %s ads=%d advertisers=%d pages=%d empty=%d %dKB %.0fs%s -> %s",
             query, country, len(run["ads"]), run["advertisers"], run["pages"], run["empty_pages"],
-            run["decoded_bytes"] // 1024, run["seconds"], run["stopped_because"],
+            run["decoded_bytes"] // 1024, run["seconds"],
+            " MORE" if run["truncated"] else "", run["stopped_because"],
         )
         return JSONResponse(content=items, headers={
             "X-Paged": "1",
@@ -234,6 +244,11 @@ async def facebook(req: SearchRequest):
             "X-Stopped-Because": run["stopped_because"],
             "X-Decoded-Bytes": str(run["decoded_bytes"]),
             "X-Session-Minted": "1" if run["session"]["minted_now"] else "0",
+            # Resume state. Send both back to continue this same search from where it stopped;
+            # X-Truncated 0 means Meta dropped the cursor and there is nothing left to ask for.
+            "X-Truncated": "1" if run["truncated"] else "0",
+            "X-Next-Cursor": run["next_cursor"] or "",
+            "X-Collation": run["collation"],
             "X-Scrape-Seconds": str(run["seconds"]),
             "X-Cache": "miss",
         })
