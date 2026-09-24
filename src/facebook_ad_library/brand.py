@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Callable
 
 from . import scraper as wire
 from .config import settings
+from .proxy import fallback_proxy_url
 from .scraper import (
     BudgetExceeded,
     Page,
@@ -63,6 +64,9 @@ class BrandResult:
     misses: int = 0  # of those, pages without the results blob
     short_counts: int = 0  # of those, pages whose total was below the ads on them (the count served unfilled)
     plain_gets: int = 0  # plugin and profile GETs
+    withheld: int = 0  # pages that carried a total above zero and no ads at all
+    recovery_gets: int = 0  # of those, GETs re-made through the fallback proxy
+    recovered: bool = False  # whether the ads came back that way
     queue_s: float = 0.0  # time spent waiting for a concurrency slot
     seconds: float = 0.0
     session_swaps: int = 0
@@ -144,7 +148,45 @@ class _Run:
                     continue
                 log.warning("%s: total still %d below the %d ads on the page; the ads are the floor", what, view.count, len(view.ads))
                 view = view._replace(count=len(view.ads))
+            # THE THROTTLE. A total above zero with no ads at all is not a page that has none;
+            # it is this address being refused the payload. Everything downstream needs the ads:
+            # the domain search picks the owning page by where its ads land, and the caller
+            # verifies a brand the same way. Without them the brand is rejected and one of its
+            # three retries is spent on a fault that was never the brand's.
+            if view is not None and view.count > 0 and not view.ads:
+                self.result.withheld += 1
+                recovered = self.recover(url, what)
+                if recovered is not None:
+                    return Page.ADS, recovered, html
             return kind, view, html
+
+    def recover(self, url: str, what: str) -> "PageView | None":
+        """The same page, fetched through the fallback proxy. `None` when there is no fallback
+        proxy to try or the attempt did not produce ads.
+
+        Meta serves a throttled address the page, the page name and a correct total, and simply
+        omits the ads - no 403, no 429, nothing to catch. Measured on the VPS 24 Sep 2026: page
+        775991435791863 answered count=1039 ads=0 direct, and count=1039 ads=30 through a
+        residential exit in the same minute. Only a page that showed that signature is refetched,
+        so an honestly empty page never costs a billed GET."""
+        from .session import recovery_pool
+
+        if not fallback_proxy_url():
+            return None
+        log.warning("%s: total above zero with no ads; refetching through the fallback proxy", what)
+        try:
+            with recovery_pool.lease(timeout=max(0.5, self.deadline - time.time())) as lease:
+                _, _, html = lease.session.fetch_url(url, self.deadline)
+        except (RateLimited, SessionDead, ScrapeFailed, ScrapeBlocked, BudgetExceeded) as e:
+            log.warning("%s: the fallback proxy did not answer either: %s", what, e)
+            return None
+        self.result.recovery_gets += 1
+        _, view = wire.classify_page_view(html)
+        if view is None or not view.ads:
+            return None
+        self.result.recovered = True
+        log.info("%s: recovered %d ad(s) through the fallback proxy", what, len(view.ads))
+        return view
 
     def plain(self, url: str, what: str) -> "Resp":
         """One non-Ad-Library page (the plugin, a profile), with the swap."""

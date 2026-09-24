@@ -31,6 +31,12 @@ class Settings:
     api_token: str = os.environ.get("API_TOKEN", "").strip()
     # Optional proxy for every request. Not needed; see .env.example.
     proxy: str | None = os.environ.get("SCRAPER_PROXY", "").strip() or None
+    # Proxy for the RECOVERY path only: the GraphQL fallback and deep paging. Separate from
+    # SCRAPER_PROXY on purpose. The rendered page is ~1 MB and the throttle withholds its ads
+    # anyway, so routing it through a residential exit pays a megabyte for a page we already
+    # know is empty; GraphQL answers the same search at ~7 KB an ad. Set this and leave
+    # SCRAPER_PROXY empty to keep the ordinary path direct. Falls back to SCRAPER_PROXY.
+    fallback_proxy: str | None = os.environ.get("FALLBACK_PROXY", "").strip() or None
     # curl_cffi impersonation target. Meta answers non-browser TLS with 400 error pages.
     impersonate: str = os.environ.get("FB_IMPERSONATE", "chrome").strip() or "chrome"
     request_timeout_s: float = _env_float("REQUEST_TIMEOUT_S", 30)

@@ -44,7 +44,7 @@ from enum import Enum
 from typing import Iterable
 
 from .config import settings
-from .proxy import proxy_url
+from .proxy import fallback_proxy_url
 from .scraper import (
     ORIGIN,
     FacebookError,
@@ -346,10 +346,10 @@ class GraphSession:
     def __init__(self, label: str = "gql") -> None:
         from .session import CurlTransport
 
-        proxy = proxy_url()
+        proxy = fallback_proxy_url()
         if not proxy:
             raise ScrapeBlocked(
-                "graphql paging needs SCRAPER_PROXY: Meta refuses /api/graphql/ from this address "
+                "graphql paging needs FALLBACK_PROXY (or SCRAPER_PROXY): Meta refuses /api/graphql/ from this address "
                 "(measured 2026-09-22, commit c81d0a3)"
             )
         self.transport = CurlTransport(proxy=proxy)

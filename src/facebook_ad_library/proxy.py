@@ -17,6 +17,16 @@ from .config import settings
 ROTATING_GATEWAY_PORTS = {"7000": "Decodo", "823": "DataImpulse"}
 
 
+def fallback_proxy_url() -> str | None:
+    """The proxy for the recovery path: FALLBACK_PROXY, or SCRAPER_PROXY when only that is set.
+
+    Kept apart from `proxy_url` so the ordinary rendered-page path can stay direct while the
+    GraphQL fallback is proxied. Proxying the rendered page costs ~1 MB for a page whose ads are
+    being withheld anyway; the same search over GraphQL costs ~7 KB an ad.
+    """
+    return proxy_url(settings.fallback_proxy) if settings.fallback_proxy else proxy_url()
+
+
 def proxy_url(raw: str | None = None) -> str | None:
     """SCRAPER_PROXY as a URL curl_cffi accepts, or None when unset.
 

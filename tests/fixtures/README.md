@@ -37,3 +37,7 @@ uv run facebook-ad-library diag --query "acupressure mat for back pain" --countr
 then cut the blob that contains `search_results_connection` out of `diag-out/page1_ads.html` and
 trim its `edges` as above. The tests pin the counts (3 edges, 5 ads, first caption
 `shaktimat.com`, page id `775991435791863`), so update them if the trim changes.
+- `page_view_withheld.html` - the throttle's signature: a page view whose total says 1039 ads
+  and whose `edges` are empty. Meta serves this to an address it is withholding from, with no
+  403 and no 429. Made from `page_view_zero.html` by raising the count, because the two differ
+  in exactly that one field and telling them apart is the whole point.

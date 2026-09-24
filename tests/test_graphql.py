@@ -141,8 +141,8 @@ def test_the_run_reports_what_it_cost(stub):
 def test_graphql_refuses_to_run_without_a_proxy(monkeypatch):
     """Meta refuses /api/graphql/ from the VPS address, so an unproxied attempt is a configuration
     error worth failing loudly on rather than a scrape that mysteriously returns nothing."""
-    monkeypatch.setattr(g, "proxy_url", lambda: None)
-    with pytest.raises(ScrapeBlocked, match="needs SCRAPER_PROXY"):
+    monkeypatch.setattr(g, "fallback_proxy_url", lambda: None)
+    with pytest.raises(ScrapeBlocked, match="needs FALLBACK_PROXY"):
         g.GraphSession()
 
 
@@ -180,7 +180,7 @@ def build_session(monkeypatch, post_resp):
         def post(self, url, data=None, headers=None):
             return post_resp
 
-    monkeypatch.setattr(g, "proxy_url", lambda: "http://proxy:1")
+    monkeypatch.setattr(g, "fallback_proxy_url", lambda: "http://proxy:1")
     monkeypatch.setattr("facebook_ad_library.session.CurlTransport", lambda **kw: T())
     s = g.GraphSession()
     s.tokens = g.Tokens(lsd="x")
@@ -258,7 +258,7 @@ def test_the_doc_id_comes_from_the_bundle_text_not_its_url(monkeypatch):
             fetched.append(url)
             return Resp(200, bundles[url])
 
-    monkeypatch.setattr(g, "proxy_url", lambda: "http://proxy:1")
+    monkeypatch.setattr(g, "fallback_proxy_url", lambda: "http://proxy:1")
     monkeypatch.setattr("facebook_ad_library.session.CurlTransport", lambda **kw: T())
     set_frozen(settings, "doc_id", "")
     s = g.GraphSession()
@@ -276,7 +276,7 @@ def test_a_bad_bundle_does_not_sink_the_mint(monkeypatch):
                 raise OSError("connection reset")
             return Resp(200, '__d("AdLibrarySearchPaginationQuery_facebookRelayOperation",[],(function(a){a.exports="777"}))')
 
-    monkeypatch.setattr(g, "proxy_url", lambda: "http://proxy:1")
+    monkeypatch.setattr(g, "fallback_proxy_url", lambda: "http://proxy:1")
     monkeypatch.setattr("facebook_ad_library.session.CurlTransport", lambda **kw: T())
     set_frozen(settings, "doc_id", "")
     assert g.GraphSession()._discover_doc_id(page) == "777"

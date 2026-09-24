@@ -161,7 +161,7 @@ def _throttled(monkeypatch, count, fallback_ads=None, proxy="http://p:1"):
 
     monkeypatch.setattr(m, "search", lambda *a, **k: SearchResult(
         query="kw", country="US", ads=[], attempts=1, misses=0, seconds=0.1, count=count))
-    monkeypatch.setattr(m, "proxy_url", lambda: proxy)
+    monkeypatch.setattr(m, "fallback_proxy_url", lambda: proxy)
     if fallback_ads is not None:
         monkeypatch.setattr(m, "page_search", lambda *a, **k: {
             "ads": fallback_ads, "advertisers": len(fallback_ads), "pages": 3, "empty_pages": 0,

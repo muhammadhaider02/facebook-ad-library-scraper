@@ -41,7 +41,7 @@ from .cache import TTLCache
 from .config import settings
 from .graphql import page_search
 from .mapping import to_item
-from .proxy import proxy_url
+from .proxy import fallback_proxy_url, proxy_url
 from .scraper import FacebookError, ScrapeBlocked, normalise_active_status, normalise_country, normalise_media_type, registrable_domain, search
 from .session import pool
 
@@ -57,6 +57,8 @@ counters = {
     "paged_requests": 0, "paged_pages": 0, "paged_decoded_bytes": 0,
     # Searches where Meta reported ads and served none, and how many the proxied fallback saved.
     "throttled_pages": 0, "throttled_recovered": 0,
+    # Brand lookups whose page carried a total and no ads, and how many the fallback proxy saved.
+    "brand_withheld": 0, "brand_recovered": 0,
 }
 _FAILURE_COUNTER = {
     "RateLimited": "rate_limited", "ResultsMissing": "results_missing", "ScrapeBlocked": "blocked",
@@ -292,7 +294,7 @@ async def facebook(req: SearchRequest):
     # came back count=50001 ads=0 in 590 KB of page. A keyword with genuinely no ads answers
     # count=0, so the two are told apart and only the withheld one pays for the residential exit.
     # Don't proxy what isn't blocked.
-    if not page_items and result.count > 0 and proxy_url():
+    if not page_items and result.count > 0 and fallback_proxy_url():
         counters["throttled_pages"] += 1
         log.warning(
             "throttled %r %s: Meta reports %d ads and served none; retrying through the proxy",
@@ -326,7 +328,7 @@ async def facebook(req: SearchRequest):
         counters["blocked"] += 1
         e = ScrapeBlocked(
             f"Meta reports {result.count} ads for {query!r} {country} and served none. This address "
-            "is being throttled; the ad payload is withheld without an error. Set SCRAPER_PROXY so "
+            "is being throttled; the ad payload is withheld without an error. Set FALLBACK_PROXY so "
             "the search can fall back to the proxied path."
         )
         log.warning("503 %r %s -> withheld payload (count=%d)", query, country, result.count)
@@ -430,6 +432,26 @@ async def adyntel(req: BrandRequest):
         counters["in_flight"] -= 1
 
     result.resolver, result.query = resolver, value
+
+    # THE RETRY GUARD, the brand half. A found page with a total above zero and no ads is not an
+    # answer the caller can use: it verifies ownership from where the ads land, so it rejects the
+    # brand and spends one of its three retries on a fault that was never the brand's. Three of
+    # those and the row is Abandoned for good. A 503 is a vendor failure, and those cost no retry.
+    # Nothing is cached either, so the next run re-asks instead of re-reading a throttled answer.
+    if result.found and result.count > 0 and not result.ads:
+        counters["blocked"] += 1
+        e = ScrapeBlocked(
+            f"Meta reports {result.count} ads for page {result.page_id} and served none"
+            + (" even through the fallback proxy" if result.recovery_gets else "")
+            + ". This address is being throttled; the ad payload is withheld without an error."
+            + ("" if result.recovery_gets else " Set FALLBACK_PROXY so the lookup can recover them.")
+        )
+        log.warning(
+            "503 adyntel %s=%s page=%s -> withheld payload (count=%d, %d recovery GET(s))",
+            resolver, value, result.page_id, result.count, result.recovery_gets,
+        )
+        return JSONResponse(status_code=e.status, content=_error_body(e, e.status))
+
     if result.found:
         counters["adyntel_found"] += 1
         brand_cache.put(("adyntel", result.page_id, status, media), result, settings.adyntel_cache_ttl_s)
@@ -441,6 +463,10 @@ async def adyntel(req: BrandRequest):
             # An id Meta does not know stays unknown; a vanity or a domain is not pinned, in case
             # the plugin or the keyword search had an off moment.
             brand_cache.put(("adyntel", value, status, media), result, settings.cache_empty_ttl_s)
+    if result.withheld:
+        counters["brand_withheld"] += 1
+    if result.recovered:
+        counters["brand_recovered"] += 1
     if result.misses or result.short_counts:
         counters["retried"] += 1
     if result.short_counts:
@@ -461,6 +487,7 @@ async def health():
         "version": __version__,
         "auth": bool(settings.api_token),
         "proxy": bool(settings.proxy),
+        "fallback_proxy": bool(settings.fallback_proxy or settings.proxy),
         "max_concurrency": settings.max_concurrency,
         **counters,
         "sessions": pool.snapshot(),

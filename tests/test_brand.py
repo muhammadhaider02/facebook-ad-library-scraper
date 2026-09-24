@@ -210,3 +210,64 @@ def test_a_total_still_short_after_the_retries_is_floored_to_the_ads_on_the_page
 def test_a_total_equal_to_or_above_the_ads_is_taken_as_served():
     res = lookup(page_id="105396194411046", pool=make_pool([fb([short_page(4)])]))
     assert res.found and res.count == 4 and res.attempts == 1 and res.short_counts == 0
+
+
+# --------------------------------------------------------------------------- the throttle
+
+
+def with_fallback(monkeypatch, transports, on=True):
+    """A recovery pool on scripted transports, standing in for the fallback proxy."""
+    from facebook_ad_library import brand as b
+    from facebook_ad_library import session as sess
+
+    monkeypatch.setattr(b, "fallback_proxy_url", lambda: "http://recovery:1" if on else None)
+    rp = make_pool(transports, size=1, max_concurrency=1)
+    monkeypatch.setattr(sess, "recovery_pool", rp)
+    return rp
+
+
+def test_a_withheld_page_view_is_recovered_through_the_fallback_proxy(monkeypatch):
+    """Meta serves a throttled address the total and no ads. Measured on the VPS 24 Sep 2026:
+    page 775991435791863 answered count=1039 ads=0 direct and count=1039 ads=30 proxied."""
+    direct = fb(pages=[page("page_view_withheld.html")])
+    recovery = fb(pages=[page("page_view_ads.html")], challenge=False)
+    with_fallback(monkeypatch, [recovery])
+
+    res = lookup(page_id=SHAKTI, pool=make_pool([direct]))
+    assert res.found and res.withheld == 1 and res.recovery_gets == 1 and res.recovered
+    assert len(res.ads) == 4, "the ads come from the recovered page, not the withheld one"
+    assert len(urls(recovery)) == 1, "one billed GET, not a retry storm"
+
+
+def test_without_a_fallback_proxy_the_withheld_page_stays_empty(monkeypatch):
+    """Nothing to recover with, so the lookup reports what it saw. The API turns this into a 503
+    rather than an empty success, so the caller does not spend a retry on it."""
+    direct = fb(pages=[page("page_view_withheld.html")])
+    with_fallback(monkeypatch, [fb(challenge=False)], on=False)
+
+    res = lookup(page_id=SHAKTI, pool=make_pool([direct]))
+    assert res.found and res.count == 1039 and not res.ads
+    assert res.withheld == 1 and res.recovery_gets == 0 and not res.recovered
+
+
+def test_a_page_with_genuinely_no_ads_never_pays_for_the_proxy(monkeypatch):
+    """count 0 is an honest answer and must not be confused with a withheld one, or every quiet
+    brand costs a billed GET. Don't proxy what isn't blocked."""
+    direct = fb(pages=[page("page_view_zero.html")])
+    recovery = fb(pages=[page("page_view_ads.html")], challenge=False)
+    with_fallback(monkeypatch, [recovery])
+
+    res = lookup(page_id=SHAKTI, pool=make_pool([direct]))
+    assert res.found and res.count == 0 and not res.ads
+    assert res.withheld == 0 and res.recovery_gets == 0
+    assert urls(recovery) == [], "no billed GET for a page that honestly has no ads"
+
+
+def test_a_failing_recovery_does_not_sink_the_lookup(monkeypatch):
+    direct = fb(pages=[page("page_view_withheld.html")])
+    recovery = fb(pages=[page("html_200.html")], challenge=False)
+    with_fallback(monkeypatch, [recovery])
+
+    res = lookup(page_id=SHAKTI, pool=make_pool([direct]))
+    assert res.found and res.withheld == 1 and not res.recovered
+    assert res.count == 1039 and not res.ads

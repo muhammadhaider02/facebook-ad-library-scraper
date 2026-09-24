@@ -189,3 +189,33 @@ def test_cache_stores_any_value_as_a_copy_and_an_explicit_ttl_wins():
     c.put(("k2",), {"a": 1}, ttl=3)
     clock.advance(4)
     assert c.get(("k2",)) is None
+
+
+def test_a_withheld_brand_lookup_is_a_503_not_a_found_page_with_no_ads(monkeypatch, client):
+    """The retry guard, brand half. Answering "Meta has 1039 ads" with an empty list makes the
+    caller reject a brand it cannot see ads for and spend one of its three retries on it."""
+    from facebook_ad_library import api as m
+    from facebook_ad_library.brand import BrandResult
+
+    res = BrandResult("page_id", "775991435791863", "active", "all")
+    res.found, res.page_id, res.count, res.ads = True, "775991435791863", 1039, []
+    res.withheld, res.recovery_gets = 1, 1
+    monkeypatch.setattr(m, "lookup", lambda *a, **k: res)
+
+    r = client.post("/adyntel", json={"page_id": "775991435791863"})
+    assert r.status_code == 503
+    msg = r.json()["error"]["message"]
+    assert "served none" in msg and "even through the fallback proxy" in msg
+
+
+def test_a_brand_with_genuinely_no_live_ads_is_still_a_normal_answer(monkeypatch, client):
+    """count 0 is an honest zero and must stay a 200, or every quiet brand looks like a failure."""
+    from facebook_ad_library import api as m
+    from facebook_ad_library.brand import BrandResult
+
+    res = BrandResult("page_id", "1", "active", "all")
+    res.found, res.page_id, res.count, res.ads, res.info = True, "1", 0, [], {"page_name": "Quiet"}
+    monkeypatch.setattr(m, "lookup", lambda *a, **k: res)
+
+    r = client.post("/adyntel", json={"page_id": "1"})
+    assert r.status_code == 200 and r.json()["number_of_ads"] == 0

@@ -26,7 +26,7 @@ from typing import Callable, Iterator, Protocol
 
 from . import scraper as wire
 from .config import settings
-from .proxy import proxy_url
+from .proxy import fallback_proxy_url, proxy_url
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +112,12 @@ class CurlTransport:
 
 def default_transport() -> Transport:
     return CurlTransport(proxy=proxy_url())
+
+
+def fallback_transport() -> Transport:
+    """A transport on the RECOVERY proxy, for the pages Meta serves this address without their
+    ads. Same rendered page, same parser - only the address it is fetched from differs."""
+    return CurlTransport(proxy=fallback_proxy_url())
 
 
 # --------------------------------------------------------------------------- pacing
@@ -420,4 +426,10 @@ class _SessionPool:
             self.live = 0
 
 
-pool = _SessionPool(settings.session_pool_size, settings.max_concurrency)
+_limiter = RateLimiter(settings.rate_limit_per_min)
+pool = _SessionPool(settings.session_pool_size, settings.max_concurrency, limiter=_limiter)
+# Recovery sessions: the same Ad Library page fetched through the fallback proxy, for when Meta
+# serves this address a correct total with no ads. One session and one at a time, deliberately -
+# every GET here is billed by the proxy, unlike the ordinary path. It shares the limiter, because
+# the 20-a-minute ceiling is about how this host looks to Meta, not about which exit it used.
+recovery_pool = _SessionPool(1, 1, factory=fallback_transport, limiter=_limiter)
