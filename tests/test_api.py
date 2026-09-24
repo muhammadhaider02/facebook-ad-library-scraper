@@ -197,3 +197,44 @@ def test_a_keyword_with_genuinely_no_ads_is_still_an_empty_200(monkeypatch, clie
     r = client.post("/facebook", json={"query": "nothing here", "country": "NZ"})
     assert r.status_code == 200 and r.json() == []
     assert not called, "don't proxy what isn't blocked"
+
+
+def test_the_second_search_skips_the_direct_get_while_throttled(monkeypatch, client):
+    """The direct GET costs ~3 s and ~1 MB to be told what the previous search established."""
+    from facebook_ad_library import api as m
+    from facebook_ad_library.scraper import SearchResult
+
+    searches = []
+    ad = {"ad_archive_id": "1", "page_id": "9", "snapshot": {"page_id": "9"}}
+
+    def fake_search(*a, **k):
+        searches.append(1)
+        return SearchResult(query="kw", country="US", ads=[], attempts=1, misses=0, seconds=0.1, count=500)
+
+    monkeypatch.setattr(m, "search", fake_search)
+    monkeypatch.setattr(m, "fallback_proxy_url", lambda: "http://p:1")
+    monkeypatch.setattr(m, "page_search", lambda *a, **k: {
+        "ads": [ad], "advertisers": 1, "pages": 1, "empty_pages": 0, "stopped_because": "true end",
+        "decoded_bytes": 100, "seconds": 1.0, "next_cursor": None, "collation": "c",
+        "truncated": False, "session": {"label": "s", "requests_made": 1, "minted_now": False},
+    })
+
+    assert client.post("/facebook", json={"query": "a", "country": "US"}).status_code == 200
+    assert client.post("/facebook", json={"query": "b", "country": "US"}).status_code == 200
+    assert len(searches) == 1, "the second search must not re-make a GET already known to fail"
+    assert m.counters["throttle_skipped_direct"] == 1
+
+
+def test_a_direct_page_with_ads_puts_the_direct_path_back(monkeypatch, client):
+    from facebook_ad_library import api as m
+    from facebook_ad_library.scraper import SearchResult
+    from facebook_ad_library.throttle import throttle
+
+    ad = {"ad_archive_id": "7", "page_id": "3", "snapshot": {"page_id": "3"}}
+    monkeypatch.setattr(m, "search", lambda *a, **k: SearchResult(
+        query="kw", country="US", ads=[ad], attempts=1, misses=0, seconds=0.1, count=30))
+    throttle.seen()
+    throttle.clear()  # the shortcut is off; this request goes direct and succeeds
+
+    assert client.post("/facebook", json={"query": "a", "country": "US"}).status_code == 200
+    assert not throttle.active(), "a page that carried ads means the throttle has stopped"

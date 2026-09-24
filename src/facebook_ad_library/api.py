@@ -42,6 +42,7 @@ from .config import settings
 from .graphql import page_search
 from .mapping import to_item
 from .proxy import fallback_proxy_url, proxy_url
+from .throttle import throttle
 from .scraper import FacebookError, ScrapeBlocked, normalise_active_status, normalise_country, normalise_media_type, registrable_domain, search
 from .session import pool
 
@@ -56,7 +57,7 @@ counters = {
     # POST /facebook with `max_pages` > 1: the proxied GraphQL path. Bytes are what the proxy bills.
     "paged_requests": 0, "paged_pages": 0, "paged_decoded_bytes": 0,
     # Searches where Meta reported ads and served none, and how many the proxied fallback saved.
-    "throttled_pages": 0, "throttled_recovered": 0,
+    "throttled_pages": 0, "throttled_recovered": 0, "throttle_skipped_direct": 0,
     # Brand lookups whose page carried a total and no ads, and how many the fallback proxy saved.
     "brand_withheld": 0, "brand_recovered": 0,
 }
@@ -269,37 +270,55 @@ async def facebook(req: SearchRequest):
         return JSONResponse(content=items, headers={"X-Cache": "hit", "X-Attempts": "0", "X-Scrape-Seconds": "0"})
 
     started = time.time()
-    counters["in_flight"] += 1
-    try:
-        result = await asyncio.to_thread(search, query, country, 300, status, pool=pool)
-    except ValueError as e:
-        counters["bad_request"] += 1
-        return JSONResponse(status_code=400, content=_error_body(e, 400))
-    except FacebookError as e:
-        name = type(e).__name__
-        counters[_FAILURE_COUNTER.get(name, "failed")] += 1
-        log.warning("%s %r %s -> %s: %s", e.status, query, country, name, e)
-        return JSONResponse(status_code=e.status, content=_error_body(e, e.status))
-    except Exception as e:  # noqa: BLE001
-        counters["failed"] += 1
-        log.exception("unexpected failure searching %r %s", query, country)
-        return JSONResponse(status_code=500, content=_error_body(e, 500))
-    finally:
-        counters["in_flight"] -= 1
 
-    page_items = [to_item(ad, result.query, result.country) for ad in result.ads]
+    # While Meta is withholding from this address the direct GET is a ~3 s, ~1 MB way of being
+    # told what the last search already established, so a recent observation skips it and the
+    # search goes straight to the proxied path. The memory expires by itself, so one direct GET
+    # per window re-probes whether Meta has stopped - see throttle.py for why that window is
+    # short. `result` stays None on this path: there is no rendered page and so no total.
+    result = None
+    if throttle.active() and fallback_proxy_url():
+        counters["throttle_skipped_direct"] += 1
+        log.info("throttled recently: %r %s goes straight to the proxy", query, country)
+    else:
+        counters["in_flight"] += 1
+        try:
+            result = await asyncio.to_thread(search, query, country, 300, status, pool=pool)
+        except ValueError as e:
+            counters["bad_request"] += 1
+            return JSONResponse(status_code=400, content=_error_body(e, 400))
+        except FacebookError as e:
+            name = type(e).__name__
+            counters[_FAILURE_COUNTER.get(name, "failed")] += 1
+            log.warning("%s %r %s -> %s: %s", e.status, query, country, name, e)
+            return JSONResponse(status_code=e.status, content=_error_body(e, e.status))
+        except Exception as e:  # noqa: BLE001
+            counters["failed"] += 1
+            log.exception("unexpected failure searching %r %s", query, country)
+            return JSONResponse(status_code=500, content=_error_body(e, 500))
+        finally:
+            counters["in_flight"] -= 1
+
+    page_items = [to_item(ad, result.query, result.country) for ad in result.ads] if result else []
 
     # THE THROTTLE. Meta serves this address a correct total with no ad payload: no 403, no 429,
     # nothing in the logs but an empty list. Measured 24 Sep 2026 on the VPS, "running shoes" US
     # came back count=50001 ads=0 in 590 KB of page. A keyword with genuinely no ads answers
     # count=0, so the two are told apart and only the withheld one pays for the residential exit.
     # Don't proxy what isn't blocked.
-    if not page_items and result.count > 0 and fallback_proxy_url():
+    withheld = result is not None and not page_items and result.count > 0
+    if withheld:
+        throttle.seen()
+    elif result is not None and page_items:
+        throttle.clear()  # a direct page carried ads, so whatever was happening has stopped
+
+    if (withheld or result is None) and fallback_proxy_url():
         counters["throttled_pages"] += 1
-        log.warning(
-            "throttled %r %s: Meta reports %d ads and served none; retrying through the proxy",
-            query, country, result.count,
-        )
+        if withheld:
+            log.warning(
+                "throttled %r %s: Meta reports %d ads and served none; retrying through the proxy",
+                query, country, result.count,
+            )
         try:
             run = await asyncio.to_thread(
                 page_search, query, country, status,
@@ -320,11 +339,13 @@ async def facebook(req: SearchRequest):
             run["stopped_because"],
         )
 
-    # THE RETRY GUARD. Answering "Meta has 1039 ads" with an empty list is worse than failing:
+    # THE RETRY GUARD, and only on the direct path: a proxied answer is authoritative, so an empty
+    # one there means the keyword really has nothing and must stay an honest empty 200.
+    # Answering "Meta has 1039 ads" with an empty list is worse than failing:
     # the caller cannot verify a brand it cannot see ads for, so it rejects the brand and spends
     # one of its three retries on a fault that was never the brand's. Three of those and the row
     # is abandoned for good. A 503 is a vendor failure, and vendor failures cost no retry.
-    if not page_items and result.count > 0:
+    if result is not None and not page_items and result.count > 0:
         counters["blocked"] += 1
         e = ScrapeBlocked(
             f"Meta reports {result.count} ads for {query!r} {country} and served none. This address "
@@ -337,17 +358,23 @@ async def facebook(req: SearchRequest):
     cache.put(key, page_items)
     items = page_items[: req.max_items]
     counters["ok" if items else "empty"] += 1
-    if result.misses:
+    # `result` is None when the direct GET was skipped, so every figure that describes the rendered
+    # page reports zero rather than inventing one.
+    if result is not None and result.misses:
         counters["retried"] += 1
     log.info(
-        "ok %r %s ads=%d attempts=%d misses=%d swaps=%d %.1fs",
-        query, country, len(items), result.attempts, result.misses, result.session_swaps, time.time() - started,
+        "ok %r %s ads=%d attempts=%d misses=%d swaps=%d %.1fs%s",
+        query, country, len(items),
+        result.attempts if result else 0, result.misses if result else 0,
+        result.session_swaps if result else 0, time.time() - started,
+        "" if result else " (direct GET skipped: throttled)",
     )
     headers = {
-        "X-Scrape-Seconds": str(result.seconds),
-        "X-Attempts": str(result.attempts),
-        "X-Misses": str(result.misses),
-        "X-Session-Swaps": str(result.session_swaps),
+        "X-Scrape-Seconds": str(round(time.time() - started, 1)),
+        "X-Attempts": str(result.attempts if result else 0),
+        "X-Misses": str(result.misses if result else 0),
+        "X-Session-Swaps": str(result.session_swaps if result else 0),
+        "X-Direct-Skipped": "0" if result else "1",
         "X-Cache": "miss",
     }
     return JSONResponse(content=items, headers=headers)
@@ -493,4 +520,5 @@ async def health():
         "sessions": pool.snapshot(),
         "cache": cache.stats(),
         "brand_cache": brand_cache.stats(),
+        "throttle": throttle.snapshot(),
     }

@@ -87,6 +87,12 @@ class Settings:
     # the fallback exists to answer the search Stage 0 asked for, not to page deeply. 8 pages is
     # ~80 ads, above Stage 0's 80-item ask, for roughly 20 KB of billed wire.
     fallback_max_pages: int = _env_int("FALLBACK_MAX_PAGES", 8)
+    # How long one withheld page suppresses the direct GET on later searches. While Meta is
+    # throttling, that GET costs ~3 s and ~1 MB to be told what the previous search already
+    # established: measured 24 Sep 2026, 24 of 24 searches with ads to give came back empty in one
+    # cycle. Minutes, not hours - while this is set every search pays the proxy, and one direct GET
+    # per window is the price of noticing Meta has stopped. 0 disables the shortcut entirely.
+    throttle_memory_s: float = _env_float("THROTTLE_MEMORY_S", 600)
     # Lookup results live this long; short, so a re-run measures the site and not the cache.
     adyntel_cache_ttl_s: float = _env_float("ADYNTEL_CACHE_TTL_S", 600)
     cache_ttl_s: float = _env_float("CACHE_TTL_S", 86400)

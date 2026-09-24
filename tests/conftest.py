@@ -150,3 +150,15 @@ def budget():
     before = settings.scrape_budget_s
     yield lambda seconds: set_frozen(settings, "scrape_budget_s", seconds)
     set_frozen(settings, "scrape_budget_s", before)
+
+
+@pytest.fixture(autouse=True)
+def _forget_the_throttle():
+    """The throttle memory is one object for the whole process, which is the point in production
+    and a trap in tests: one test observing a withheld page would make the next one skip its
+    direct GET. Cleared before and after every test."""
+    from facebook_ad_library.throttle import throttle
+
+    throttle.clear()
+    yield
+    throttle.clear()
