@@ -86,7 +86,7 @@ class Settings:
     # Pages the proxied fallback may take when this address is being throttled. Small on purpose:
     # the fallback exists to answer the search Stage 0 asked for, not to page deeply. 8 pages is
     # ~80 ads, above Stage 0's 80-item ask, for roughly 20 KB of billed wire.
-    fallback_max_pages: int = _env_int("FALLBACK_MAX_PAGES", 20)
+    fallback_max_pages: int = _env_int("FALLBACK_MAX_PAGES", 8)
     # How long one withheld page suppresses the direct GET on later searches. While Meta is
     # throttling, that GET costs ~3 s and ~1 MB to be told what the previous search already
     # established: measured 24 Sep 2026, 24 of 24 searches with ads to give came back empty in one
