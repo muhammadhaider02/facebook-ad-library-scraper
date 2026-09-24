@@ -223,3 +223,16 @@ def test_the_form_carries_the_doc_id_and_the_friendly_name():
     assert form["doc_id"] == "999"
     assert form["fb_api_req_friendly_name"] == g.FRIENDLY
     assert form["lsd"] == "L" and '"a": 1' in form["variables"].replace("'", '"') or form["variables"]
+
+
+# --------------------------------------------------------------------------- max_items vs max_ads
+
+
+def test_max_items_sizes_the_response_and_does_not_stop_the_paging():
+    """They were the same field once, and that capped every 150-page run at 300 ads."""
+    from facebook_ad_library.api import SearchRequest
+
+    r = SearchRequest(query="kw", max_pages=150, max_items=80)
+    assert r.max_ads == 0, "no ad target unless one is asked for: the page cap decides"
+    assert SearchRequest(query="kw", max_items=1000).max_items == 1000
+    assert SearchRequest(query="kw", max_ads=627).max_ads == 627

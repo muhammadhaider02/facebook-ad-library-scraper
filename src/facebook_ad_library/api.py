@@ -95,6 +95,10 @@ class SearchRequest(BaseModel):
     max_pages: int = Field(default=1, validation_alias=AliasChoices("max_pages", "maxPages"))
     novelty_stop: int = Field(default=25, validation_alias=AliasChoices("novelty_stop", "noveltyStop"))
     empty_tol: int = Field(default=8, validation_alias=AliasChoices("empty_tol", "emptyTol"))
+    # How many ads are worth paging for, which is NOT `max_items`: that one sizes the response and
+    # exists for Apify parity. Conflating them caps a 150-page run at the `max_items` clamp and the
+    # page cap is never reached. 0 leaves the stop to the page, novelty and empty limits.
+    max_ads: int = Field(default=0, validation_alias=AliasChoices("max_ads", "maxAds"))
 
     @field_validator("country", mode="before")
     @classmethod
@@ -110,7 +114,9 @@ class SearchRequest(BaseModel):
             n = int(v)
         except (TypeError, ValueError):
             return 80
-        return max(1, min(n, 300))
+        # 300 was the rendered page's sanity bound (it only ever carries 30). A paged search
+        # legitimately returns more: `red light therapy mask` gave 627 ads over 150 pages.
+        return max(1, min(n, 5000))
 
     @field_validator("active_status", mode="before")
     @classmethod
@@ -197,7 +203,7 @@ async def facebook(req: SearchRequest):
         try:
             run = await asyncio.to_thread(
                 page_search, query, country, status,
-                req.max_pages, req.novelty_stop, req.empty_tol, req.max_items,
+                req.max_pages, req.novelty_stop, req.empty_tol, req.max_ads,
             )
         except FacebookError as e:
             counters[_FAILURE_COUNTER.get(type(e).__name__, "failed")] += 1
