@@ -410,12 +410,30 @@ class GraphSession:
         if r.status != 200:
             raise ScrapeBlocked(f"graphql bootstrap answered HTTP {r.status}, title={_title_of(r.text)!r}")
         self.tokens = extract_tokens(r.text)
-        self.doc_id = settings.doc_id or (discover_doc_id(bundle_urls(r.text)) or "")
+        self.doc_id = settings.doc_id or self._discover_doc_id(r.text)
         if not self.doc_id:
             raise ScrapeBlocked("no AdLibrarySearchPaginationQuery doc_id in the page bundles; set FB_DOC_ID")
         self.minted_at = self.last_call = time.time()
         log.info("%s minted via proxy for %s/%s: doc_id %s, %d KB",
                  self.label, query, country, self.doc_id, self.decoded_bytes // 1024)
+
+    def _discover_doc_id(self, html: str) -> str:
+        """The persisted-query id, from the page's own JS bundles. They are fetched one at a
+        time through a generator so the search stops at the first bundle that defines the
+        operation: the id has lived in an early one every time, and a bundle is ~100 KB of
+        billed proxy traffic. One bad bundle must not sink the mint."""
+        urls = bundle_urls(html)
+
+        def texts():
+            for u in urls:
+                try:
+                    r = self.transport.get(u, headers={"Referer": self.referer})
+                    self._count(r.text)
+                    yield r.text
+                except Exception as e:  # noqa: BLE001
+                    log.warning("%s: bundle fetch failed: %s", self.label, e)
+
+        return discover_doc_id(texts()) or ""
 
     def search_page(self, query, country, cursor, collation_token, first=30, active_status="ACTIVE"):
         """One GraphQL page of ads and the cursor for the next. Typed errors for anything else."""

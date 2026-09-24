@@ -236,3 +236,47 @@ def test_max_items_sizes_the_response_and_does_not_stop_the_paging():
     assert r.max_ads == 0, "no ad target unless one is asked for: the page cap decides"
     assert SearchRequest(query="kw", max_items=1000).max_items == 1000
     assert SearchRequest(query="kw", max_ads=627).max_ads == 627
+
+
+# --------------------------------------------------------------------------- doc_id discovery
+
+
+def test_the_doc_id_comes_from_the_bundle_text_not_its_url(monkeypatch):
+    """`discover_doc_id` takes bundle TEXT. Handing it the URLs found nothing and every mint
+    died with `set FB_DOC_ID`, which looks like a Meta change and is not one."""
+    fetched = []
+    page = '<script src="https://static.xx.fbcdn.net/rsrc.php/v1/aa.js"></script>' \
+           '<script src="https://static.xx.fbcdn.net/rsrc.php/v1/bb.js"></script>'
+    bundles = {
+        "https://static.xx.fbcdn.net/rsrc.php/v1/aa.js": "nothing useful here",
+        "https://static.xx.fbcdn.net/rsrc.php/v1/bb.js":
+            '__d("AdLibrarySearchPaginationQuery_facebookRelayOperation",[],(function(a){a.exports="24922295957467452"}))',
+    }
+
+    class T:
+        def get(self, url, headers=None, timeout=None):
+            fetched.append(url)
+            return Resp(200, bundles[url])
+
+    monkeypatch.setattr(g, "proxy_url", lambda: "http://proxy:1")
+    monkeypatch.setattr("facebook_ad_library.session.CurlTransport", lambda **kw: T())
+    set_frozen(settings, "doc_id", "")
+    s = g.GraphSession()
+    assert s._discover_doc_id(page) == "24922295957467452"
+    assert len(fetched) == 2, "the generator stops at the first bundle that matches"
+
+
+def test_a_bad_bundle_does_not_sink_the_mint(monkeypatch):
+    page = '<script src="https://static.xx.fbcdn.net/rsrc.php/v1/aa.js"></script>' \
+           '<script src="https://static.xx.fbcdn.net/rsrc.php/v1/bb.js"></script>'
+
+    class T:
+        def get(self, url, headers=None, timeout=None):
+            if url.endswith("aa.js"):
+                raise OSError("connection reset")
+            return Resp(200, '__d("AdLibrarySearchPaginationQuery_facebookRelayOperation",[],(function(a){a.exports="777"}))')
+
+    monkeypatch.setattr(g, "proxy_url", lambda: "http://proxy:1")
+    monkeypatch.setattr("facebook_ad_library.session.CurlTransport", lambda **kw: T())
+    set_frozen(settings, "doc_id", "")
+    assert g.GraphSession()._discover_doc_id(page) == "777"
