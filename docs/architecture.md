@@ -328,6 +328,8 @@ So the Brave slot was replaced with no search at all (deployment.md, "Cutting th
 | `PAGE_MAX_PAGES` | `150` | ceiling on an explicit `max_pages` request; also the hard ceiling in code |
 | `PAGE_NOVELTY_STOP` | `25` | pages with no new advertiser that end a paged search |
 | `PAGE_EMPTY_TOL` | `8` | blank pages in a row that end a paged search. Stopping at the first one cost 135 ads and 25 advertisers on one keyword |
+| `MINT_FAILURE_LIMIT` | `2` | sessions minted in a row that returned no page, after which minting stops until the cooldown. A mint is the most expensive call the service makes |
+| `MINT_COOLDOWN_S` | `900` | how long minting stops for. It reopens by itself and tries one more session rather than latching |
 | `FB_DOC_ID` | *(empty)* | persisted-query id for `AdLibrarySearchPaginationQuery`. Discovered from the page bundles when empty, which costs ~21 MB a mint; pinning it costs ~0.9 MB |
 | `FB_VARIABLES_JSON` | *(empty)* | JSON object merged over the GraphQL variables, for a schema change that needs a field the service does not send |
 | `FB_IMPERSONATE` | `chrome` | `curl_cffi` TLS profile |

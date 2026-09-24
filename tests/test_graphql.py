@@ -361,3 +361,92 @@ def test_the_two_halves_of_a_split_search_cover_what_one_long_call_would(stub):
 
     ids = lambda r: [a["ad_archive_id"] for a in r["ads"]]  # noqa: E731
     assert ids(first) + ids(second) == ids(one)
+
+
+# --------------------------------------------------------------------------- the mint breaker
+
+
+def test_a_session_that_never_returns_a_page_is_counted(monkeypatch):
+    """The 24 Sep incident: Meta answered 1675004 on the FIRST call of every fresh session, each
+    already paid for, and nothing stopped the next keyword minting another."""
+    b = g.MintBreaker(limit=2, cooldown_s=900, clock=Clock())
+    b.failed()
+    b.check()  # one is a session dying, which is ordinary
+    b.failed()
+    with pytest.raises(ScrapeBlocked, match="not minting"):
+        b.check()
+
+
+def test_the_breaker_reopens_after_the_cooldown():
+    c = Clock()
+    b = g.MintBreaker(limit=2, cooldown_s=900, clock=c)
+    b.failed(); b.failed()
+    with pytest.raises(ScrapeBlocked):
+        b.check()
+    c.advance(901)
+    b.check()  # one more session is tried, rather than latching for good
+    assert b.snapshot()["consecutive_failed_sessions"] == 0
+
+
+def test_a_page_clears_the_count():
+    b = g.MintBreaker(limit=2, cooldown_s=900, clock=Clock())
+    b.failed()
+    b.ok()
+    b.failed()
+    b.check(), "one failure after a success must not trip it"
+
+
+def test_a_zero_limit_disables_the_breaker():
+    b = g.MintBreaker(limit=0, cooldown_s=900, clock=Clock())
+    for _ in range(10):
+        b.failed()
+    b.check()
+
+
+def test_an_open_breaker_refuses_before_paying_for_a_mint(monkeypatch):
+    """The point of it: no GraphSession is constructed, so no mint is paid for."""
+    made = []
+
+    class FakeSession:
+        def __init__(self, *a, **k):
+            made.append(self)
+            self.requests_made, self.ready = 0, True
+
+        def mint(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(g, "GraphSession", FakeSession)
+    monkeypatch.setattr(g, "breaker", g.MintBreaker(limit=1, cooldown_s=900, clock=Clock()))
+    g.reset_session()
+    g.breaker.failed()
+    with pytest.raises(ScrapeBlocked, match="not minting"):
+        g._live_session("kw", "US", "active")
+    assert made == [], "an open breaker must not construct a session at all"
+    g.reset_session()
+
+
+def test_the_first_page_of_a_run_clears_the_breaker(stub):
+    stub([([ad(1)], None)])
+    g.reset_breaker()
+    g.breaker.failed()
+    g.page_search("kw", max_pages=150)
+    assert g.breaker.snapshot()["consecutive_failed_sessions"] == 0
+
+
+def test_a_run_that_dies_on_its_first_page_trips_the_breaker(monkeypatch):
+    """End to end: this is the shape of the 24 Sep incident, where the session minted and then
+    was refused 1675004 before returning anything."""
+    class DeadSession:
+        label, requests_made, decoded_bytes = "dead", 0, 0
+
+        def search_page(self, *a, **k):
+            raise RateLimited("1675004: Rate limit exceeded")
+
+    monkeypatch.setattr(g, "_live_session", lambda *a, **k: DeadSession())
+    g.reset_breaker()
+    for _ in range(2):
+        with pytest.raises(RateLimited):
+            g.page_search("kw", max_pages=150)
+    assert g.breaker.snapshot()["open"] is True
+    with pytest.raises(ScrapeBlocked, match="not minting"):
+        g.breaker.check()

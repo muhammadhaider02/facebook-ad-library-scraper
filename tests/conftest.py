@@ -154,11 +154,15 @@ def budget():
 
 @pytest.fixture(autouse=True)
 def _forget_the_throttle():
-    """The throttle memory is one object for the whole process, which is the point in production
-    and a trap in tests: one test observing a withheld page would make the next one skip its
-    direct GET. Cleared before and after every test."""
+    """The throttle memory and the mint breaker are each one object for the whole process, which
+    is the point in production and a trap in tests: one test observing a withheld page would make
+    the next one skip its direct GET, and one leaving failures on the breaker would make the next
+    refuse to mint. Both cleared before and after every test."""
+    from facebook_ad_library import graphql
     from facebook_ad_library.throttle import throttle
 
     throttle.clear()
+    graphql.reset_breaker()
     yield
     throttle.clear()
+    graphql.reset_breaker()

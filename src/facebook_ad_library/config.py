@@ -93,6 +93,13 @@ class Settings:
     # cycle. Minutes, not hours - while this is set every search pays the proxy, and one direct GET
     # per window is the price of noticing Meta has stopped. 0 disables the shortcut entirely.
     throttle_memory_s: float = _env_float("THROTTLE_MEMORY_S", 600)
+    # Sessions minted in a row that never returned a page, after which no more are minted until
+    # the cooldown passes. A mint is the most expensive call this service makes; on 24 Sep 2026
+    # Meta answered 1675004 on the first GraphQL call of every fresh session from the proxy exit
+    # and nothing stopped the next keyword minting another - 7 in 20 minutes, 136 MB, zero ads.
+    # 0 disables the breaker, which is how that incident was configured.
+    mint_failure_limit: int = _env_int("MINT_FAILURE_LIMIT", 2)
+    mint_cooldown_s: float = _env_float("MINT_COOLDOWN_S", 900)
     # Lookup results live this long; short, so a re-run measures the site and not the cache.
     adyntel_cache_ttl_s: float = _env_float("ADYNTEL_CACHE_TTL_S", 600)
     cache_ttl_s: float = _env_float("CACHE_TTL_S", 86400)

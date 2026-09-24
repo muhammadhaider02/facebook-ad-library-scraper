@@ -39,7 +39,7 @@ from .adyntel_mapping import to_envelope
 from .brand import BrandResult, lookup
 from .cache import TTLCache
 from .config import settings
-from .graphql import page_search
+from .graphql import breaker as mint_breaker, page_search
 from .mapping import to_item
 from .proxy import fallback_proxy_url, proxy_url
 from .throttle import throttle
@@ -521,4 +521,5 @@ async def health():
         "cache": cache.stats(),
         "brand_cache": brand_cache.stats(),
         "throttle": throttle.snapshot(),
+        "mint_breaker": mint_breaker.snapshot(),
     }

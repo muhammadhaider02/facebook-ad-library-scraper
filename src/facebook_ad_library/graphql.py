@@ -37,11 +37,12 @@ import json
 import logging
 import random
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .config import settings
 from .proxy import fallback_proxy_url
@@ -483,11 +484,99 @@ class GraphSession:
 _session = None
 
 
+class MintBreaker:
+    """Refuses to keep paying for sessions that cannot work.
+
+    A mint is the most expensive thing this module does, and on 24 Sep 2026 it became the most
+    expensive thing it does for nothing: Meta began answering 1675004 on the FIRST GraphQL call of
+    every fresh session from the proxy exit. The session had already been minted by then, and
+    nothing stopped the next keyword minting another. Seven in twenty minutes, 136 MB, zero ads.
+
+    The failure was never that a session died - sessions die, and swapping is the right answer. It
+    was that nothing counted how many had died WITHOUT EVER RETURNING A PAGE, which is the shape
+    of a problem that re-minting cannot fix. Two of those in a row and this closes.
+    """
+
+    def __init__(self, limit: int | None = None, cooldown_s: float | None = None,
+                 clock: Callable[[], float] = time.time) -> None:
+        self._limit = limit
+        self._cooldown = cooldown_s
+        self._clock = clock
+        self._lock = threading.Lock()
+        self.failures = 0
+        self.opened_at: float | None = None
+        self.refusals = 0
+
+    @property
+    def limit(self) -> int:
+        return settings.mint_failure_limit if self._limit is None else self._limit
+
+    @property
+    def cooldown(self) -> float:
+        return settings.mint_cooldown_s if self._cooldown is None else self._cooldown
+
+    def check(self) -> None:
+        """Raise rather than mint, while the breaker is open."""
+        if self.limit <= 0:
+            return
+        with self._lock:
+            if self.opened_at is None:
+                return
+            left = self.cooldown - (self._clock() - self.opened_at)
+            if left <= 0:
+                self.opened_at, self.failures = None, 0
+                log.info("mint breaker: cooldown over, trying one more session")
+                return
+            self.refusals += 1
+        raise ScrapeBlocked(
+            f"not minting: {self.failures} session(s) in a row were minted and refused a page "
+            f"before returning one, at roughly 1 MB each. Retrying in {left:.0f}s. This is Meta "
+            "refusing this exit, not a session that needs swapping."
+        )
+
+    def failed(self) -> None:
+        """A session was minted and never returned a page."""
+        with self._lock:
+            self.failures += 1
+            if self.limit > 0 and self.failures >= self.limit and self.opened_at is None:
+                self.opened_at = self._clock()
+                log.warning(
+                    "mint breaker OPEN after %d session(s) minted with nothing to show; "
+                    "no more mints for %.0fs", self.failures, self.cooldown,
+                )
+
+    def ok(self) -> None:
+        """A session returned a page, so whatever was wrong has stopped."""
+        with self._lock:
+            self.failures, self.opened_at = 0, None
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            since = None if self.opened_at is None else round(self._clock() - self.opened_at, 1)
+        return {
+            "open": since is not None and since < self.cooldown,
+            "consecutive_failed_sessions": self.failures,
+            "seconds_open": since,
+            "cooldown_s": self.cooldown,
+            "mints_refused": self.refusals,
+        }
+
+
+breaker = MintBreaker()
+
+
+def reset_breaker() -> None:
+    global breaker
+    breaker = MintBreaker()
+
+
 def _live_session(query: str, country: str, status: str) -> "GraphSession":
     """The shared session, minted on first use and re-minted when it expires. Reuse is what makes
-    GraphQL cheaper than the rendered page: the mint is amortised over every keyword it serves."""
+    GraphQL cheaper than the rendered page: the mint is amortised over every keyword it serves,
+    and a mint that is paid over and over is the whole cost of this module going wrong."""
     global _session
     if _session is None or not _session.ready:
+        breaker.check()
         _session = GraphSession()
         _session.mint(query, country, status)
     return _session
@@ -551,7 +640,16 @@ def page_search(
                 stopped = f"ran out of the {int(budget_s)}s budget after {len(pages)} page(s)"
                 break
         t0, b0 = time.time(), s.decoded_bytes
-        page_ads, cursor = s.search_page(query, country, cursor, collation, 30, gql_status)
+        try:
+            page_ads, cursor = s.search_page(query, country, cursor, collation, 30, gql_status)
+        except FacebookError:
+            # A session that never returned a page is not a session worth replacing: the next
+            # mint would be refused the same way, and a mint is ~1 MB. Count it and re-raise.
+            if not pages:
+                breaker.failed()
+            raise
+        if not pages:
+            breaker.ok()  # this exit still works; forget any earlier run of failures
         new = set()
         for a in page_ads:
             pid = str(a.get("page_id") or (a.get("snapshot") or {}).get("page_id") or "")
