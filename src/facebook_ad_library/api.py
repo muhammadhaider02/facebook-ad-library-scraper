@@ -538,7 +538,7 @@ async def submit_job(req: JobRequest):
 
 
 @app.get("/jobs/{job_id}", dependencies=[Depends(require_token)])
-async def poll_job(job_id: str, wait_s: float = 0, include_items: int = 1, partial: int = 0):
+async def poll_job(job_id: str, wait_s: float = 0, include_items: str = "1", partial: int = 0):
     assert jobs is not None and dispatcher is not None
     job = jobs.get(job_id)
     if job is None:
@@ -547,7 +547,9 @@ async def poll_job(job_id: str, wait_s: float = 0, include_items: int = 1, parti
     while job.status not in ("done", "cancelled") and time.time() < deadline:
         await asyncio.sleep(0.25)
     snap = dispatcher.snapshot()["lanes_summary"]
-    return JSONResponse(content=job_payload(job, bool(include_items), bool(partial), snap))
+    mode = str(include_items or "1").strip().lower()
+    mode = "lite" if mode in ("lite", "2") else ("0" if mode in ("0", "false", "no") else "1")
+    return JSONResponse(content=job_payload(job, mode, bool(partial), snap))
 
 
 @app.delete("/jobs/{job_id}", dependencies=[Depends(require_token)])

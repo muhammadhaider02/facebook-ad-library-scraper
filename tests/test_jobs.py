@@ -1,5 +1,6 @@
 """POST /jobs: a run of searches and counts in, results paired back by id out."""
 
+import json
 import time
 
 import pytest
@@ -232,3 +233,17 @@ def test_max_pages_outside_the_ceiling_is_400(client, monkeypatch):
     assert r.status_code == 400 and "max_pages" in r.text
     r = submit(client, [{"id": "a", "query": "x", "country": "US", "max_pages": settings.page_max_pages + 1}])
     assert r.status_code == 400
+
+
+def test_include_items_lite_keeps_only_the_sourcing_fields(client, monkeypatch):
+    fake_search(monkeypatch)
+    r = submit(client, [{"id": "a", "query": "grounding sheets", "country": "US"}])
+    p = poll(client, r.json()["job_id"], include_items="lite").json()
+    item = p["results"][0]["items"][0]
+    assert item["page_name"] == "Shakti Mat" and item["page_id"] and "snapshot" in item
+    assert set(item["snapshot"]).issubset({"caption", "link_url", "title", "link_description", "page_like_count", "page_profile_uri", "page_categories", "body"})
+    assert isinstance(item["snapshot"]["body"], dict) and "text" in item["snapshot"]["body"]
+    assert "cards" not in item["snapshot"] and "_details" not in item
+    full = poll(client, r.json()["job_id"], include_items=1).json()["results"][0]["items"][0]
+    assert len(json.dumps(item)) < len(json.dumps(full))
+    assert poll(client, r.json()["job_id"], include_items=0).json()["results"][0]["items"] is None

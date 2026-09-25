@@ -50,6 +50,21 @@ def search_items(outcome: Outcome, query: str, country: str) -> list[dict]:
     return [to_item(ad, query, country) for ad in outcome.ads]
 
 
+LITE_SNAPSHOT = ("caption", "link_url", "title", "link_description", "page_like_count", "page_profile_uri", "page_categories")
+
+
+def lite_item(item: dict) -> dict:
+    """The fields sourcing reads off an ad and nothing else: the page identity, the domain
+    carriers and the ad text. A full item is 3-5 KB; a deep job of 200 pairs x 150 ads serialised
+    in full is hundreds of MB and killed the 768 MB container (25 Sep 2026)."""
+    snap = item.get("snapshot") or {}
+    body = snap.get("body")
+    text = body.get("text") if isinstance(body, dict) else body
+    lite = {k: item.get(k) for k in ("ad_archive_id", "page_id", "page_name", "page_url", "page_profile_uri", "page_alias", "page_category", "page_like_count", "is_active", "start_date")}
+    lite["snapshot"] = {**{k: snap.get(k) for k in LITE_SNAPSHOT if k in snap}, "body": {"text": str(text or "")[:400]}}
+    return lite
+
+
 def remember_search(outcome: Outcome, query: str, country: str, status: str) -> list[dict]:
     """Map and, for an answer Facebook actually gave, cache. A blocked or errored search is never
     cached: the next caller must re-ask rather than re-read a throttled answer."""

@@ -183,7 +183,8 @@ class JobStore:
 # --------------------------------------------------------------------------- shaping
 
 
-def result_payload(job: Job, item_id: str, include_items: bool) -> dict:
+def result_payload(job: Job, item_id: str, include_items: str) -> dict:
+    """`include_items`: "0" (no ad arrays or envelopes), "1" (everything), "lite" (service.lite_item per ad)."""
     s = job.specs[item_id]
     o = job.results.get(item_id)
     if o is None:
@@ -203,7 +204,7 @@ def result_payload(job: Job, item_id: str, include_items: bool) -> dict:
         return {
             **common, "query": s["query"], "country": s["country"], "ads_found": len(items),
             "reported_total": o.count, "direct_skipped": o.direct_skipped,
-            "items": items if include_items else None,
+            "items": ([service.lite_item(i) for i in items] if include_items == "lite" else items) if include_items != "0" else None,
         }
     res = o.brand
     return {
@@ -211,11 +212,11 @@ def result_payload(job: Job, item_id: str, include_items: bool) -> dict:
         "number_of_ads": res.count if res is not None and res.found else None,
         "page_id": res.page_id if res is not None else None,
         "page_name": res.page_name if res is not None else None,
-        "envelope": service.envelope(res, s.get("max_results", 10)) if res is not None and include_items else None,
+        "envelope": service.envelope(res, s.get("max_results", 10)) if res is not None and include_items != "0" else None,
     }
 
 
-def job_payload(job: Job, include_items: bool, partial: bool, lanes: dict) -> dict:
+def job_payload(job: Job, include_items: str, partial: bool, lanes: dict) -> dict:
     finished = job.status in ("done", "cancelled")
     return {
         "job_id": job.id, "status": job.status,

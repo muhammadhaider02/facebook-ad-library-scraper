@@ -28,9 +28,12 @@ services:
     networks:
       - n8n
 
-    # Eight lanes hold up to eight pages in flight at once, so a little more than production.
-    mem_limit: 768m
-    memswap_limit: 768m
+    # Eight lanes hold up to eight pages in flight at once, and a deep job's answer (200 pairs x
+    # up to 150 ads) is serialised in one piece: 768m was OOM-killed on exactly that (25 Sep
+    # 2026). Poll with include_items=lite for the sourcing fields only; the headroom is for the
+    # full shape.
+    mem_limit: 2g
+    memswap_limit: 2g
     mem_reservation: 128m
 
     init: true
