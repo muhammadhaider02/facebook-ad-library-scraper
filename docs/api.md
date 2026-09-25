@@ -275,7 +275,7 @@ Long-polls up to `min(wait_s, JOB_POLL_MAX_WAIT_S)` seconds (50; keep it under t
   "lanes": { "total": 2, "up": 2, "cooling": 0, "blocked": 0 } }
 ```
 
-- `results` is in submission order and every result echoes its `id` and its `query`/`country` (or `page_id`), so the caller can assert `results.length == items.length` and join by id. It is `null` until the job is `done` unless `partial=1`; `include_items=0` drops the ad arrays and envelopes for a cheap poll.
+- `results` is in submission order and every result echoes its `id` and its `query`/`country` (or `page_id`), so the caller can assert `results.length == items.length` and join by id. It is `null` until the job is `done` unless `partial=1`; `include_items=0` drops the ad arrays and envelopes for a cheap poll; `include_items=lite` keeps only the fields sourcing reads off an ad (page identity, `snapshot.caption`, `link_url`, `title`, `body.text`, `link_description`), a fraction of the full item, which is what a deep job of 200 pairs should be polled with.
 - Result statuses: `ok`, `no_ads` (the rendered page said 0), `blocked` (refused on every lane that could take it: `tries[].outcome` says `withheld`, `blocked` or `rate_limited` per lane), `error`, `not_found` (counts only). A `blocked` search is never turned into `no_ads`.
 - `404`: unknown, expired (`JOB_TTL_S` after it finished), or lost to a restart: jobs live in memory only. `DELETE /jobs/{id}` cancels what is still queued (`error: "Cancelled: cancelled"` on those items); the item a lane is on finishes.
 

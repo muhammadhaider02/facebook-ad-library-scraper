@@ -428,7 +428,11 @@ class Lane:
                 if self.error_streak >= settings.lane_error_cooldown_after:
                     self.error_streak = 0
                     self.ip_recheck = True
-                    cool = (settings.lane_error_cooldown_s, False, "%d errors in a row" % settings.lane_error_cooldown_after)
+                    # The first run of errors cools the lane and re-checks its IP; errors again on
+                    # the probe after that cooldown mean the exit itself is bad (lane-5's address
+                    # failed every TLS handshake for an afternoon, 25 Sep 2026), so it is swapped
+                    # for a reserve port rather than cooled for longer and longer.
+                    cool = (settings.lane_error_cooldown_s, self.probe, "%d errors in a row" % settings.lane_error_cooldown_after)
         if cool:
             self._cool(*cool)
 

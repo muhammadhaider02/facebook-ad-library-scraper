@@ -569,3 +569,20 @@ def test_a_lane_snapshot_never_waits_on_a_mint_in_progress():
         t.join(2)
         assert not t.is_alive(), "the snapshot waited on the slot lock while holding the lane lock"
     assert snap["decoded_bytes"] == 5 and snap["gql"]["breaker_open"] is False
+
+
+def test_errors_again_on_the_probe_after_an_error_cooldown_rotate_the_exit():
+    """An exit that fails its handshakes, cools, comes back and fails again is a bad exit, not a
+    busy one: the second error cooldown moves the lane to a reserve port."""
+    set_frozen(settings, "lane_error_cooldown_after", 3)
+    set_frozen(settings, "lane_error_cooldown_s", 120)
+    clock = Clock()
+    lane = make_lane([site(), site()], clock=clock, ports=[11510, 11511])
+    for _ in range(3):
+        lane.record(L.Try("error", error="ssl", error_type="ScrapeFailed"))
+    assert lane.state == "cooling" and lane.rotations == 0 and lane.port == 11510
+    clock.advance(121)
+    assert lane.available() and lane.probe
+    for _ in range(3):
+        lane.record(L.Try("error", error="ssl", error_type="ScrapeFailed"))
+    assert lane.state == "cooling" and lane.rotations == 1 and lane.port == 11511
