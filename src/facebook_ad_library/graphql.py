@@ -620,14 +620,16 @@ class GraphSlot:
             self._session = None
 
     def snapshot(self) -> dict:
-        with self._lock:
-            s = self._session
-            return {
-                "label": s.label if s else None,
-                "requests_made": s.requests_made if s else 0,
-                "age_s": round(time.time() - s.minted_at, 1) if s and s.minted_at else None,
-                "breaker_open": self.breaker.snapshot().get("open", False),
-            }
+        # No lock: `live` holds it for the whole mint (seconds of network), and a reader that
+        # waits on it while holding a lane lock deadlocks the service (see Lane.snapshot).
+        # Reading the reference is atomic; a snapshot may lag a mint by a moment, which is fine.
+        s = self._session
+        return {
+            "label": s.label if s else None,
+            "requests_made": s.requests_made if s else 0,
+            "age_s": round(time.time() - s.minted_at, 1) if s and s.minted_at else None,
+            "breaker_open": self.breaker.snapshot().get("open", False),
+        }
 
 
 def reset_session() -> None:

@@ -480,16 +480,24 @@ class Lane:
 
     def snapshot(self) -> dict:
         tries, blocked = self.rate_1h()
+        # The pool, the GraphQL slot and the throttle each have their own lock, and a worker holds
+        # them while it calls back into this lane (a mint counts its bytes through `_count`, which
+        # takes `self.lock`). Read them BEFORE taking the lane lock, never inside it: taking the
+        # lane lock first and then waiting on a slot lock deadlocked /health against a lane
+        # minting a session (25 Sep 2026, exec 4356), and with the event loop stuck every poll
+        # hung and the whole service stopped.
+        sess = self.pool.snapshot()
+        gql = self.gql.snapshot()
+        throttled = self.throttle.active()
         with self.lock:
-            sess = self.pool.snapshot()
             return {
                 "id": self.name, "port": self.port, "exit_ip": self.exit_ip, "state": self.state,
                 "since_s": round(self._clock() - self.since, 1),
                 "cooldown_left_s": round(max(0.0, self.cooldown_until - self._clock()), 1) if self.state != "up" else 0.0,
                 "probe": self.probe, "rotations": self.rotations, "ip_changes": self.ip_changes,
                 "session": {"live": sess["live"], "warm": sess["warm"]},
-                "gql": self.gql.snapshot(),
-                "throttle_active": self.throttle.active(),
+                "gql": gql,
+                "throttle_active": throttled,
                 "requests": self.requests, "ok": self.ok, "no_ads": self.no_ads, "not_found": self.not_found,
                 "blocked": self.blocked, "errors": self.errors,
                 "avg_response_ms": round(self.ms_total / self.requests) if self.requests else None,

@@ -549,3 +549,23 @@ def test_workers_run_items_in_threads_and_the_counters_stay_consistent(monkeypat
         d.stop()
     assert all(o.status == "ok" for o in outs)
     assert sum(l.requests for l in ls) == 24 and d.done_items == 24 and d.queue_depth == 0
+
+
+def test_a_lane_snapshot_never_waits_on_a_mint_in_progress():
+    """/health deadlocked the service (25 Sep 2026, exec 4356): the snapshot took the lane lock and then
+    waited on the GraphQL slot lock, while a worker minting a session held the slot lock and waited on
+    the lane lock to count its bytes. A snapshot must finish while a mint holds the slot."""
+    import threading
+
+    lane = make_lane([site()], gql_script=[])
+    with lane.gql._lock:  # a mint in progress on a worker thread
+        counted = threading.Thread(target=lane._count, args=(5,))
+        counted.start()
+        counted.join(2)
+        assert not counted.is_alive(), "counting bytes must not wait on the slot lock"
+        snap = {}
+        t = threading.Thread(target=lambda: snap.update(lane.snapshot()))
+        t.start()
+        t.join(2)
+        assert not t.is_alive(), "the snapshot waited on the slot lock while holding the lane lock"
+    assert snap["decoded_bytes"] == 5 and snap["gql"]["breaker_open"] is False
