@@ -1,0 +1,60 @@
+# The SOURCING container: the lanes build that workflow 00 runs on since 25 Sep 2026.
+#
+# It started life as the "lanes" test container beside production and was renamed when 00 was
+# cut over to it. Production (docker-compose.yml) pins `container_name: facebook-ad-library` and
+# the image tag `latest` for 01/02; bringing that file up from a second checkout would REPLACE
+# it. This file is name-pinned differently everywhere, runs as its own Compose project, and never
+# retags `latest`:
+#
+#   git clone <repo> /opt/facebook-ad-library-sourcing && cd /opt/facebook-ad-library-sourcing
+#   cp .env.example .env.sourcing   # then fill it in (see docs/deployment.md, "The sourcing container")
+#   docker compose -p facebook-ad-library-sourcing -f docker-compose.sourcing.yml up -d --build
+#
+# n8n reaches it at http://facebook-ad-library-sourcing:8003 over the shared network; the alias
+# `facebook-ad-library-lanes` is kept so a workflow still holding the old name keeps working.
+# Production keeps answering on http://facebook-ad-library:8002. The two share nothing but the
+# network and the proxy account, and `.env.sourcing` must use ports disjoint from production's exit.
+#
+# Health from the host:
+#   docker exec facebook-ad-library-sourcing python -c "import urllib.request as u; \
+#     print(u.urlopen('http://127.0.0.1:8003/health').read().decode())"
+services:
+  scraper:
+    build: .
+    image: facebook-ad-library:sourcing
+    container_name: facebook-ad-library-sourcing
+    restart: unless-stopped
+    env_file: .env.sourcing
+
+    # No `ports:` on purpose (see docker-compose.yml). Reachable only from the network below.
+    networks:
+      n8n:
+        aliases:
+          - facebook-ad-library-lanes
+
+    # Eight lanes hold up to eight pages in flight at once, and a deep job's answer (200 pairs x
+    # up to 150 ads) is serialised in one piece: 768m was OOM-killed on exactly that (25 Sep
+    # 2026). Poll with include_items=lite for the sourcing fields only; the headroom is for the
+    # full shape.
+    mem_limit: 2g
+    memswap_limit: 2g
+    mem_reservation: 128m
+
+    init: true
+    # Threads count here: eight lane workers, asyncio's pool and uvicorn stay well under this.
+    pids_limit: 128
+
+    # A job's items are bounded per try (LANE_SEARCH_BUDGET_S) and per item
+    # (JOB_ITEM_MAX_WAIT_S); a redeploy mid-job loses the job, which the caller sees as a 404.
+    stop_grace_period: 250s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+networks:
+  n8n:
+    external: true
+    name: n8n_default
