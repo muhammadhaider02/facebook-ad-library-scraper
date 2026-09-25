@@ -33,7 +33,9 @@ jobs:
 
       - name: Start container
         run: |
-          docker run -d --name scraper -p 8002:8002 -e API_TOKEN="$API_TOKEN" facebook-ad-library:ci
+          # One proxy-less lane: a GitHub runner has no residential exit. LANE_REQUIRE_PROXY=false
+          # exists for exactly this job and nothing else; production refuses to start without one.
+          docker run -d --name scraper -p 8002:8002 -e API_TOKEN="$API_TOKEN" -e LANE_COUNT=1 -e LANE_REQUIRE_PROXY=false -e LANE_IP_CHECK_URL= facebook-ad-library:ci
           for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:8002/health && break
             sleep 2
