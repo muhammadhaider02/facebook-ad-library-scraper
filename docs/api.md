@@ -252,6 +252,7 @@ POST /jobs
 - `kind: search` takes the `/facebook` request fields (`query`, `country`, `activeStatus`, `maxAds`); `kind: count` takes the `/adyntel` fields (`page_id`, `facebook_url` or `company_domain`, `active_status`, `media_type`, `max_results`). `id` is required and must be unique within the job.
 - `400`: no items, more than `JOB_MAX_ITEMS` (200), a duplicate `id`, or an item that `/facebook` or `/adyntel` would refuse. `503 Busy`: `JOB_STORE_MAX` jobs are already queued or running, or the queue holds `JOB_QUEUE_MAX` items.
 - A search already in the cache is answered without a lane (`cached: true`); an `ok` or `no_ads` job result feeds the same cache the single call reads.
+- `kind: search` also takes `max_pages` (with `novelty_stop`, `empty_tol`, `max_ads`), the deep-paging fields of `POST /facebook`: GraphQL on the lane, no rendered page, up to `max_pages` x 30 ads, `direct_skipped: true` on the result. The rendered page serves at most 30 ads, so a second job with `max_pages` on the pairs whose `reported_total` was above 30 is how a run pages the strong searches deeper. A deep item never reads the cache and never writes it, and `max_pages` above `PAGE_MAX_PAGES` is a `400`.
 
 ```http
 GET /jobs/{id}?wait_s=45&include_items=1&partial=0
@@ -277,6 +278,18 @@ Long-polls up to `min(wait_s, JOB_POLL_MAX_WAIT_S)` seconds (50; keep it under t
 - `results` is in submission order and every result echoes its `id` and its `query`/`country` (or `page_id`), so the caller can assert `results.length == items.length` and join by id. It is `null` until the job is `done` unless `partial=1`; `include_items=0` drops the ad arrays and envelopes for a cheap poll.
 - Result statuses: `ok`, `no_ads` (the rendered page said 0), `blocked` (refused on every lane that could take it: `tries[].outcome` says `withheld`, `blocked` or `rate_limited` per lane), `error`, `not_found` (counts only). A `blocked` search is never turned into `no_ads`.
 - `404`: unknown, expired (`JOB_TTL_S` after it finished), or lost to a restart: jobs live in memory only. `DELETE /jobs/{id}` cancels what is still queued (`error: "Cancelled: cancelled"` on those items); the item a lane is on finishes.
+
+## Homepage fetch: `POST /fetch`
+
+Stage 0 reads a sourced brand's homepage before Claude judges it, and about a fifth of those reads fail from the VPS address (measured 24-25 Sep 2026: 103 of 499, half of them 403s from bot walls that see a bare Node.js request from a data-centre IP). This reads the page the way a browser on a home connection would: through a lane's residential exit, with the Chrome TLS profile. It is not a lane try (no Facebook cookie jar, limiter or cooldown; a refusing homepage is the brand's problem, not the exit's), and it never raises, so a caller pairing pages to brands by position never loses a slot.
+
+```http
+POST /fetch
+Authorization: Bearer <API_TOKEN>
+{ "url": "fornobravo.com" }
+```
+
+`200` always, with `ok` (a 2xx/3xx answer with a non-empty body), `status`, `final_url`, `bytes`, `text` (at most `max_bytes`, default `FETCH_MAX_BYTES` 300 000), `error` (`http 403`, `ConnectionError: ...`, ...), `seconds`, `lane` (the exit used, round robin) and `proxied`. Optional `timeout_s` (default `FETCH_TIMEOUT_S` 15, ceiling 60) and `max_bytes`. `400` only for a malformed `url`; a bare domain gets `https://`. `FETCH_CONCURRENCY` (4) fetches run at once. Measured 25 Sep 2026 on 14 homepages that had failed from the VPS: 6 loaded through a lane (4 of the 7 403s), the dead hosts and 404s stayed failed. Headers: `X-Status: ok|failed`, `X-Lane`.
 
 ## `GET /health`
 
