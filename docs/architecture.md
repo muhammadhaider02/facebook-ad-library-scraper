@@ -153,11 +153,29 @@ The Ad Library's only gate is the challenge above plus a TLS-fingerprint check. 
 
 `FB_IMPERSONATE` is `chrome`, an alias for the newest Chrome profile the installed `curl_cffi` knows (`chrome150` in 0.16.3). A `400` after a clean challenge is the fingerprint being rejected; the service names that symptom in its `ScrapeBlocked` message.
 
+## Lanes
+
+Since 0.4.0 (25 Sep 2026) every request to Facebook runs on a lane, and nothing leaves on the host's own address. Umer's decision, stage0.md: the same service answers 01's 50+ checks and 02's research ads, so a block on the VPS address would stop the whole pipeline, not just sourcing; and sourcing itself was capped at one keyword at a time.
+
+**A lane is one exit IP and one fake browser**, and holds, per exit, everything that was process-global before:
+
+- a pool of one rendered-page session (cookie jar A) and one GraphQL session (jar B), both on the lane's sticky proxy port; a lane serves one request at a time, like one browser;
+- its own `RateLimiter`: the identity Meta sees is the exit, so `RATE_LIMIT_PER_MIN` (20) is per lane and eight lanes are eight budgets;
+- its own throttle memory ("this exit is being withheld from", `THROTTLE_MEMORY_S`) and its own mint breaker;
+- a state, `up | cooling | blocked`. A hard block (a 403 without a challenge, a 400 TLS page, two dead jars, a closed breaker) or a 429 cools the lane for `LANE_COOLDOWN_S` (900) and, with `LANE_ROTATE_ON_BLOCK`, moves it to the next reserve port, a genuinely new IP, because the IP is what is blocked. The lane comes back with one probe; if the probe blocks the cooldown doubles up to `LANE_COOLDOWN_MAX_S`, and three failed probes park it as `blocked` for `LANE_BLOCKED_RETRY_S`. Errors (results missing, network, 5xx) do not cool a lane on their own; `LANE_ERROR_COOLDOWN_AFTER` (3) in a row do, briefly, with an exit-ip re-check;
+- its exit IP, learned through its own proxy at mint (`LANE_IP_CHECK_URL`, a ~60 byte GET) and re-checked every `LANE_IP_CHECK_S` between items. A changed IP on the same port is the vendor rotating under a live jar: both jars are retired, the port is kept. Two lanes that learn the same IP are one identity to Meta, so the later one rotates. Every log line and `/health` row names the address.
+
+**The ladder per lane** is the one described under [The throttle](#the-throttle), on one exit: the rendered page through the lane's proxy; when Meta serves a total and no ads, GraphQL on the *same* lane (its tokens are bound to the exit that minted them), with what is left of the try's `LANE_SEARCH_BUDGET_S` (90), not a fixed 240 s. While the lane's throttle memory stands the rendered GET is skipped; if GraphQL then finds nothing, one rendered GET is made after all, because only its total tells an honest empty (`no_ads`) from a withheld page (`blocked`). A withheld page whose recovery finds nothing is `withheld`, reported `blocked`, never `no_ads`: the 0.3.1 rule that "a proxied answer is authoritative" assumed the proxy exit was the one address not being throttled, and with every request proxied that assumption is gone. `LANE_WITHHELD_ROTATE` (3) withheld pages in a row retire the lane's jars and move it to a fresh port. A withheld page *view* (`/adyntel`) is not refetched on the same exit at all: it is the lane's outcome, and the lookup moves to another lane.
+
+**The dispatcher** is one worker thread per lane pulling from one queue ordered by priority then arrival: `/adyntel` single calls first (25 s budgets), `/facebook` single calls next, batch job items last, so a 40-search job never starves a lookup. An item refused by a lane is retried on a *different* lane, never the same one twice, at most `LANE_MAX_TRIES` (3) times in all; with fewer lanes than tries it ends when no untried lane exists. `ResultsMissing` and network errors are retried elsewhere too but do not cool the lane. An item nobody can take before its deadline (every lane cooling or blocked) is answered `Busy`, or `blocked` if any try was a block. A 429 on a lane no longer naps `RATE_LIMIT_SLEEP_S`: the per-try budget is too short for the nap to fit, so the search swaps once on that exit and then moves lane.
+
+**What Meta sees** from one lane is what it saw from the host before: one address, one jar, 2 to 5 s between GETs, at most 20 a minute. What changed is that there are N of them, none of them the VPS, and a refused one takes itself out of rotation.
+
 ## Sessions
 
-The unit of identity is a session, not a request: one cookie jar (`datr`, `rd_challenge`), created empty and filled by its first GET. `FbSession` in `session.py` holds one; `_SessionPool` keeps `SESSION_POOL_SIZE` (3) of them warm, hands them out round-robin under a `MAX_CONCURRENCY` (3) semaphore, creates lazily on the first lease, and drops a session on its way back if it is retired or expired. A session expires after `SESSION_MAX_REQUESTS` (200) GETs or `SESSION_MAX_AGE_S` (7,200 s), both starting points rather than measured limits; `/health` reports `retired_by_reason` so the limit that actually bites can be seen. A session that gets `MISS_STREAK_RETIRE` (5) pages without results in a row is retired as suspect; a real empty result resets the streak. A lookup that cannot get a slot inside its budget is answered `Busy` rather than queued past the caller's own timeout.
+The unit of identity is a session, not a request: one cookie jar (`datr`, `rd_challenge`), created empty and filled by its first GET. `FbSession` in `session.py` holds one; each lane's `_SessionPool` keeps one warm, creates it lazily on the first lease, and drops it on its way back if it is retired or expired. A session expires after `SESSION_MAX_REQUESTS` (200) GETs or `SESSION_MAX_AGE_S` (7,200 s); keep the age at or below the proxy vendor's sticky rotation interval, so a jar and its IP live and die together (`retired_by_reason: ip_rotated` on `/health` means the interval is shorter). A session that gets `MISS_STREAK_RETIRE` (5) pages without results in a row is retired as suspect; a real empty result resets the streak. A lookup that cannot get a lane inside its budget is answered `Busy` rather than queued past the caller's own timeout.
 
-Pacing has two layers: a random gap of `SPACING_MIN_S` to `SPACING_MAX_S` (2 to 5 s) between GETs on one session, and a process-wide ceiling of `RATE_LIMIT_PER_MIN` (20) GETs a minute across all sessions and both endpoints. Stage 0 needs one GET per pair, 40 pairs an hour; a brand lookup is 1 to 3 GETs and 01 and 02 make up to 3 and 4 lookups per brand, one brand at a time each. Measured 22 Sep 2026 from the VPS: 20 page views in 96 s at 12 a minute, then the harness's ~110 lookups in 10 minutes at 20 a minute, all served, no challenge after the first, no throttle, with Stage 0's hourly run completing normally in between; at 12 the harness's back-to-back calls hit the lookup budget once.
+Pacing has two layers: a random gap of `SPACING_MIN_S` to `SPACING_MAX_S` (2 to 5 s) between rendered-page GETs on one session (`GQL_SPACING_MIN_S`/`MAX_S`, 1 to 2 s, between GraphQL pages), and a ceiling of `RATE_LIMIT_PER_MIN` (20) GETs a minute per lane across both endpoints. Measured 22 Sep 2026 from one address: 20 page views in 96 s at 12 a minute, then the harness's ~110 lookups in 10 minutes at 20 a minute, all served, no challenge after the first, no throttle, with Stage 0's hourly run completing normally in between; at 12 the harness's back-to-back calls hit the lookup budget once.
 
 ## Retries and the error ladder
 
@@ -211,7 +229,7 @@ Brand lookups keep a second, shorter-lived cache: the page view under (page id, 
 
 One Python process with no browser. Each in-flight search or lookup holds one page of up to 1.7 MB while it is parsed; the two caches are the only things that grow, and both are bounded. The compose limits (512m) are a blast-radius guard for the host, not a working budget.
 
-`MAX_CONCURRENCY` (3) bounds searches and lookups in flight: three workflows call the service, each one request at a time, and three slots let them overlap without queueing. The global limiter, not the semaphore, is what shapes the traffic Meta sees.
+`LANE_COUNT` bounds searches and lookups in flight: one per lane, because a lane is one browser. Single calls from the three workflows jump the queue ahead of batch items, lookups first. Each lane's limiter, not the worker count, is what shapes the traffic Meta sees from each exit. Eight lanes hold up to eight pages in flight, so the lanes container's compose limit is 768m.
 
 ## Measured against Apify
 
@@ -305,23 +323,41 @@ So the Brave slot was replaced with no search at all (deployment.md, "Cutting th
 |---|---|
 | `src/facebook_ad_library/scraper.py` | the search and page-view URLs, the challenge URL, the page markers and the results and page-record parsers, the vanity and domain resolvers, and the search with its budget and recovery rules |
 | `src/facebook_ad_library/brand.py` | one brand lookup: the resolver ladder, the page view, its own budget and recovery rules |
-| `src/facebook_ad_library/session.py` | one session (the GET, the challenge, pacing, classification of the answer, plain GETs for the plugin and profile pages), the global limiter and the pool; the transport seam the tests replace |
+| `src/facebook_ad_library/session.py` | one session (the GET, the challenge, pacing, classification of the answer, plain GETs for the plugin and profile pages), the limiter and the pool a lane holds; the transport seam the tests replace |
+| `src/facebook_ad_library/lanes.py` | a lane (its exit, sessions, limiter, throttle, breaker, state and counters), the per-lane search and count ladders, and the dispatcher (one worker per lane, the priority queue, cross-lane retry) |
+| `src/facebook_ad_library/jobs.py` | batch jobs: the in-memory store, submission, results paired by id, long-poll, cancel, eviction |
+| `src/facebook_ad_library/service.py` | what the single calls and the jobs share: the two caches, request validation, turning an outcome into the vendor shapes |
 | `src/facebook_ad_library/mapping.py` | turns a collated result into the item shape Stage 0 reads |
 | `src/facebook_ad_library/adyntel_mapping.py` | turns a lookup into the envelope the 01 and 02 call sites read, with `duration_s` decoded from the video URLs |
 | `src/facebook_ad_library/cache.py` | the TTL cache, used twice |
-| `src/facebook_ad_library/api.py` | FastAPI surface: both endpoints' request aliases, bearer check, caches, error bodies, headers, counters |
-| `src/facebook_ad_library/proxy.py` | `SCRAPER_PROXY` parsing and the rotating-gateway guard |
+| `src/facebook_ad_library/api.py` | FastAPI surface: the two vendor endpoints, `/jobs`, bearer check, error bodies, headers, counters, `/health`; starts and stops the dispatcher |
+| `src/facebook_ad_library/proxy.py` | proxy credential parsing, the rotating-gateway guard, the lane exits from `LANE_PROXY_TEMPLATE` + `LANE_PROXY_PORTS`, and the port allocator |
 | `src/facebook_ad_library/config.py` | environment variables, read once |
-| `src/facebook_ad_library/__init__.py` | the `facebook-ad-library` CLI (`serve`, `search`, `brand`, `diag`) |
-| `tests/` | 190 tests against the saved fixtures; no network. `tests/fixtures/README.md` says how each fixture was cut from a live page and how to refresh it |
+| `src/facebook_ad_library/__init__.py` | the `facebook-ad-library` CLI (`serve`, `search`, `brand`, `diag`), every command on one configured lane |
+| `docker-compose.lanes.yml` | the second, name-pinned container for the ramp beside production; see [deployment.md](deployment.md#the-lanes-container) |
+| `tests/` | 300 tests against the saved fixtures; no network. `tests/fixtures/README.md` says how each fixture was cut from a live page and how to refresh it |
 
 ## Configuration (environment variables)
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `API_TOKEN` | *(empty)* | bearer token callers must send; empty disables auth, for local testing only |
-| `SCRAPER_PROXY` | *(empty)* | proxy for **every** request, as a URL or `host:port:user:pass`. Leave empty: the direct path is free and the rendered page is ~1 MB. Rotating gateway ports (Decodo 7000, DataImpulse 823) are refused at startup |
-| `FALLBACK_PROXY` | *(empty)* | proxy for the **recovery** path only - the searches and lookups Meta answers with a total and no ads. Set this, leave `SCRAPER_PROXY` empty, and only refused calls are billed. Falls back to `SCRAPER_PROXY` |
+| `LANE_COUNT` | `1` | lanes running in parallel; every one needs its own exit. Ramp 1 → 2 → 4 → 8 |
+| `LANE_PROXY_TEMPLATE` | *(empty)* | the proxy credential with `{port}` where the lane's sticky port goes, e.g. `http://user__cr.us:pass@gw.dataimpulse.com:{port}` |
+| `LANE_PROXY_PORTS` | *(empty)* | sticky ports, ranges and lists (`11510-11529`); the first `LANE_COUNT` are lanes, the rest the reserve for rotation. Rotating gateway ports (Decodo 7000, DataImpulse 823) are refused at startup |
+| `LANE_PROXIES` | *(empty)* | escape hatch: full proxy specs, comma-separated, one per lane, when the template does not fit |
+| `LANE_REQUIRE_PROXY` | `true` | a lane without a proxy refuses to start. CI only sets it false |
+| `LANE_IP_CHECK_URL` / `LANE_IP_CHECK_S` | ipify / `600` | where a lane learns its exit IP and how often it re-checks; empty disables |
+| `LANE_ROTATE_ON_BLOCK` | `true` | a hard block moves the lane to the next reserve port |
+| `LANE_COOLDOWN_S` / `LANE_COOLDOWN_MAX_S` / `LANE_BLOCKED_RETRY_S` | `900` / `3600` / `3600` | the cooldown after a block, its ceiling while probes keep failing, and how long a lane stays `blocked` after three failed probes |
+| `LANE_ERROR_COOLDOWN_AFTER` / `LANE_ERROR_COOLDOWN_S` | `3` / `120` | errors in a row that cool a lane briefly, with an exit-ip re-check |
+| `LANE_MAX_TRIES` | `3` | lanes an item may be tried on, never the same one twice, before it is `blocked` |
+| `LANE_WITHHELD_ROTATE` | `3` | withheld pages in a row that retire a lane's jars and move it to a fresh port |
+| `LANE_SEARCH_BUDGET_S` / `LANE_COUNT_BUDGET_S` | `90` / `20` | per-try budgets; the request budgets still bound a single call end to end |
+| `GQL_SPACING_MIN_S` / `GQL_SPACING_MAX_S` | `1` / `2` | gap between two GraphQL pages on one lane session |
+| `JOB_MAX_ITEMS` / `JOB_STORE_MAX` / `JOB_QUEUE_MAX` | `200` / `50` / `1000` | bounds on one job, on live jobs, on queued items |
+| `JOB_ITEM_MAX_WAIT_S` / `JOB_TTL_S` / `JOB_POLL_MAX_WAIT_S` | `600` / `7200` / `50` | how long a job item may wait for a lane, how long a finished job stays readable, the longest one poll holds |
+| `SCRAPER_PROXY`, `FALLBACK_PROXY` | *(retired)* | 0.3.1's direct path and single recovery exit; read only to warn at startup |
 | `FALLBACK_MAX_PAGES` | `8` | pages a recovered search may take. Raising it buys the worst pages there are; see [The throttle](#the-throttle) |
 | `THROTTLE_MEMORY_S` | `600` | how long one withheld page suppresses the direct GET. Expires rather than latching: while it is set every search pays the proxy |
 | `PAGE_BUDGET_S` | `240` | wall-clock ceiling on one paged call, so it answers inside the caller's node timeout. A run that stops here returns `X-Truncated: 1` with a cursor |
@@ -335,12 +371,11 @@ So the Brave slot was replaced with no search at all (deployment.md, "Cutting th
 | `FB_IMPERSONATE` | `chrome` | `curl_cffi` TLS profile |
 | `REQUEST_TIMEOUT_S` | `30` | per-request timeout |
 | `SSR_RETRIES` | `2` | extra GETs when the search page comes without its results blob |
-| `MAX_CONCURRENCY` | `3` | searches and lookups in flight |
-| `SESSION_POOL_SIZE` | `3` | warm sessions |
+| `MAX_CONCURRENCY`, `SESSION_POOL_SIZE` | *(retired)* | a lane is one session and one request at a time; `LANE_COUNT` is the concurrency |
 | `SESSION_MAX_REQUESTS` | `200` | GETs before a session is retired |
-| `SESSION_MAX_AGE_S` | `7200` | age before a session is retired |
-| `SPACING_MIN_S` / `SPACING_MAX_S` | `2` / `5` | random gap between GETs on one session |
-| `RATE_LIMIT_PER_MIN` | `20` | GETs a minute from this process, all sessions, both endpoints |
+| `SESSION_MAX_AGE_S` | `7200` | age before a session is retired; keep at or below the vendor's sticky rotation interval |
+| `SPACING_MIN_S` / `SPACING_MAX_S` | `2` / `5` | random gap between rendered-page GETs on one session |
+| `RATE_LIMIT_PER_MIN` | `20` | GETs a minute per lane (one exit IP), rendered and GraphQL, both endpoints |
 | `RATE_LIMIT_SLEEP_S` | `60` | sleep before the one retry on a `429` (searches only) |
 | `MISS_STREAK_RETIRE` | `5` | consecutive pages without results that retire a session |
 | `SCRAPE_BUDGET_S` | `240` | wall-clock ceiling per search; must stay under Stage 0's 300 s |

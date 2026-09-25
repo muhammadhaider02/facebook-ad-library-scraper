@@ -190,8 +190,14 @@ One object per ad, in the order the Ad Library shows them. Every key is present 
 | `X-Misses` | of those, pages that came without their results and were retried |
 | `X-Short-Counts` | of those, pages whose total was below the ads on them and were refetched; Meta now and then serves the count unfilled (`count: 0` above 30 ads, seen 23 Sep 2026). When every attempt is short, `number_of_ads` is the number of ads on the page, a floor, never 0 |
 | `X-Session-Swaps` | `1` when the first session was refused and a fresh one finished the search |
-| `X-Direct-Skipped` | `1` when the direct GET was skipped because Meta was recently withholding, so the answer came from the proxied path. The page figures above then read `0`: there was no rendered page |
+| `X-Direct-Skipped` | `1` when the lane skipped its rendered GET because Meta was recently withholding from that exit, so the answer came over GraphQL. The page figures above then read `0`: there was no rendered page |
 | `X-Cache` | `hit` or `miss` |
+| `X-Status` | `ok`, `no_ads`, `blocked` or `error` (0.4.0). `no_ads` is only ever said when the rendered page carried its results with a total of 0; a total above zero with no ads is `blocked`, never `no_ads` |
+| `X-Ads-Found`, `X-Reported-Total` | ads in the answer, and Meta's total for the search when a rendered page gave one (empty on a GraphQL-only answer) |
+| `X-Lane`, `X-Exit-IP`, `X-Tries` | which lane answered, the exit address it used, and how many lanes the search tried (a lane that refused it is never asked twice; see [architecture.md, Lanes](architecture.md#lanes)) |
+| `X-Decoded-Bytes` | what the tries decoded. The proxy bills the wire, roughly a fifth of this for a rendered page |
+
+`/adyntel` answers carry the same `X-Status` (`ok` or `not_found` on a `200`), `X-Lane`, `X-Exit-IP`, `X-Tries` and `X-Decoded-Bytes` beside its own headers above.
 
 On a paged answer (`max_pages > 1`) these are sent as well:
 
@@ -208,31 +214,77 @@ On a paged answer (`max_pages > 1`) these are sent as well:
 ## Errors
 
 ```json
-{ "error": { "type": "ResultsMissing", "status": 503, "message": "the page came without results 3 time(s) in a row for 'running shoes' US", "description": "..." } }
+{ "error": { "type": "ResultsMissing", "status": 503, "message": "the page came without results 3 time(s) in a row for 'running shoes' US", "description": "...", "kind": "error" } }
 ```
+
+`kind` (0.4.0) is `blocked` or `error`: `blocked` means every lane that could take the request was refused by Meta (a 403, a 429, or a page whose ads were withheld), `error` means the request could not be completed for another reason. The `type` is the last lane's own error.
 
 | Status | Type | When |
 |---|---|---|
 | `400` | `ValueError` | no `query`, a country that is not two letters or `ALL`, an unknown `activeStatus` or `media_type`; on `/adyntel`, none of `page_id`, `facebook_url`, `company_domain`, or a non-numeric page id |
 | `401` | `HTTPException` | missing or wrong bearer token |
-| `503` | `ScrapeBlocked` | the challenge would not clear, a `403` without it, a `400` error page after it (TLS fingerprint rejected), two dead sessions in a row, or a login wall on the plugin or profile page twice |
-| `503` | `ScrapeBlocked` (withheld) | **Meta reported ads and served none, and the recovery could not get them either.** Deliberately not an empty `200`: the caller verifies a brand from where its ads land, so an empty list makes it reject the brand and spend one of its three retries on a fault that was never the brand's. The message names the count and says whether the fallback proxy was tried |
-| `503` | `RateLimited` | HTTP `429` again after the one sleep, on a fresh session too (a lookup does not sleep: it swaps) |
+| `503` | `ScrapeBlocked` | the challenge would not clear, a `403` without it, a `400` error page after it (TLS fingerprint rejected), two dead sessions in a row, or a login wall on the plugin or profile page twice, on every lane that could take it (`LANE_MAX_TRIES`, different lanes) |
+| `503` | `ScrapeBlocked` (withheld) | **Meta reported ads and served none on this exit, and GraphQL on the same lane could not get them either**, on every lane tried. Deliberately not an empty `200`: the caller verifies a brand from where its ads land, so an empty list makes it reject the brand and spend one of its three retries on a fault that was never the brand's. The message names the count |
+| `503` | `RateLimited` | HTTP `429` or GraphQL `1675004` on every lane tried; a lane that answers one cools down and the request moves to another |
 | `503` | `ResultsMissing` | every attempt inside the budget came back without the results blob |
-| `503` | `BudgetExceeded` | `/adyntel` only: the next GET could not finish inside `BRAND_BUDGET_S`, priced with the limiter's next free slot |
-| `503` | `Busy` | `/adyntel` only: every concurrency slot stayed taken for the whole budget |
+| `503` | `BudgetExceeded` | the next GET could not finish inside the budget, priced with the lane limiter's next free slot |
+| `503` | `Busy` | no lane could take the request inside its budget (every lane busy, cooling or blocked), or the job queue is full |
 | `503` | `ScrapeFailed` | network failure or `5xx` that survived the retries |
-| `500` | | anything unexpected |
+| `500` | | anything unexpected; `type` names the exception |
 
 A `503` is a vendor failure: nothing about the request was wrong, and the same request may succeed a minute later. A `400` is the caller's. `200 []` means the Ad Library shows no ads for that keyword in that country, which Stage 0 already handles as its own outcome; `200 {}` on `/adyntel` means there is no page for the input, which 01 and 02 handle by taking their next fallback.
 
+## Batch jobs: `POST /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}`
+
+Since 0.4.0. One submission carries a whole sourcing run, the lanes spread it out, and the caller polls for the results paired back by id. Submit + poll rather than one long request, so a 300 s node timeout never cuts a run in half. Bearer-protected like the two vendor endpoints.
+
+```http
+POST /jobs
+{ "items": [
+    { "id": "kw17-US", "kind": "search", "query": "grounding sheets", "country": "US", "activeStatus": "active", "maxItems": 300 },
+    { "id": "b-775991435791863", "kind": "count", "page_id": "775991435791863" }
+  ],
+  "max_tries": 3 }
+```
+
+`202 { "job_id": "j_20260925_ab12cd34", "status": "queued", "items": 2, "poll": "/jobs/j_20260925_ab12cd34?wait_s=50" }`
+
+- `kind: search` takes the `/facebook` request fields (`query`, `country`, `activeStatus`, `maxAds`); `kind: count` takes the `/adyntel` fields (`page_id`, `facebook_url` or `company_domain`, `active_status`, `media_type`, `max_results`). `id` is required and must be unique within the job.
+- `400`: no items, more than `JOB_MAX_ITEMS` (200), a duplicate `id`, or an item that `/facebook` or `/adyntel` would refuse. `503 Busy`: `JOB_STORE_MAX` jobs are already queued or running, or the queue holds `JOB_QUEUE_MAX` items.
+- A search already in the cache is answered without a lane (`cached: true`); an `ok` or `no_ads` job result feeds the same cache the single call reads.
+
+```http
+GET /jobs/{id}?wait_s=45&include_items=1&partial=0
+```
+
+Long-polls up to `min(wait_s, JOB_POLL_MAX_WAIT_S)` seconds (50; keep it under the caller's HTTP timeout), then answers:
+
+```json
+{ "job_id": "j_…", "status": "running | done | cancelled", "submitted_at": 1790350000.1, "started_at": 1790350000.2, "finished_at": null, "elapsed_s": 41.3,
+  "counts": { "total": 41, "done": 40, "ok": 30, "no_ads": 6, "blocked": 2, "error": 1, "not_found": 1 },
+  "results": [
+    { "id": "kw17-US", "kind": "search", "query": "grounding sheets", "country": "US", "status": "ok",
+      "ads_found": 30, "reported_total": 1039, "direct_skipped": false, "items": [ …the /facebook items… ],
+      "lane": "lane-2", "exit_ip": "86.x.x.x", "seconds": 7.1, "decoded_bytes": 1210044, "cached": false, "error": null,
+      "tries": [ { "lane": "lane-1", "ip": "92.x.x.x", "status": "blocked", "outcome": "rate_limited", "reason": "RateLimited: http 429 …", "seconds": 3.1, "decoded_bytes": 20011 },
+                 { "lane": "lane-2", "ip": "86.x.x.x", "status": "ok", "outcome": "ok", "reason": "", "seconds": 4.0, "decoded_bytes": 1190033 } ] },
+    { "id": "b-775991435791863", "kind": "count", "page_id": "775991435791863", "status": "ok",
+      "number_of_ads": 1039, "page_name": "Shakti Mat", "envelope": { …the /adyntel envelope… }, "lane": "lane-3", "tries": [ … ], "error": null }
+  ],
+  "lanes": { "total": 2, "up": 2, "cooling": 0, "blocked": 0 } }
+```
+
+- `results` is in submission order and every result echoes its `id` and its `query`/`country` (or `page_id`), so the caller can assert `results.length == items.length` and join by id. It is `null` until the job is `done` unless `partial=1`; `include_items=0` drops the ad arrays and envelopes for a cheap poll.
+- Result statuses: `ok`, `no_ads` (the rendered page said 0), `blocked` (refused on every lane that could take it: `tries[].outcome` says `withheld`, `blocked` or `rate_limited` per lane), `error`, `not_found` (counts only). A `blocked` search is never turned into `no_ads`.
+- `404`: unknown, expired (`JOB_TTL_S` after it finished), or lost to a restart: jobs live in memory only. `DELETE /jobs/{id}` cancels what is still queued (`error: "Cancelled: cancelled"` on those items); the item a lane is on finishes.
+
 ## `GET /health`
 
-Unauthenticated, for uptime checks and the Docker `HEALTHCHECK`.
+Unauthenticated, for uptime checks and the Docker `HEALTHCHECK`. Since 0.4.0 it also carries the lanes: `lanes` (one row per lane: `id`, `port`, `exit_ip`, `state` `up|cooling|blocked`, `cooldown_left_s`, `probe`, `rotations`, `ip_changes`, the session and GraphQL session, `throttle_active`, `requests`, `ok`, `no_ads`, `not_found`, `blocked`, `errors`, `avg_response_ms`, `decoded_bytes`, `tries_1h`, `blocked_tries_1h`, `last_error`), `lanes_summary` (`total`, `up`, `cooling`, `blocked`), `block_rate_1h` (blocked tries over tries in the last hour, across lanes), `ip_stats` (per exit address: requests, blocks, average response time, first and last seen, which lanes; the last 100), `ports` (held and reserve), `queue_depth`, `doc_id_stale` (a GraphQL schema change that needs a human), and `jobs` (`queued`, `running`, `done`, `queue_depth`, `store`). `proxy` is `true` when every lane has an exit; `max_concurrency` is the lane count; `throttle` and `mint_breaker` say how many lanes have each active.
 
 ```json
 {
-  "status": "ok", "version": "0.3.1", "auth": true, "proxy": false, "max_concurrency": 3,
+  "status": "ok", "version": "0.4.0", "auth": true, "proxy": true, "max_concurrency": 2,
   "requests": 3, "ok": 2, "empty": 0, "retried": 1, "cache_hits": 1,
   "bad_request": 1, "blocked": 0, "rate_limited": 0, "results_missing": 0, "failed": 0, "in_flight": 0,
   "adyntel_requests": 4, "adyntel_found": 3, "adyntel_not_found": 1, "adyntel_cache_hits": 1, "adyntel_resolve_hits": 1, "adyntel_short_counts": 0,
@@ -260,6 +312,8 @@ uv run facebook-ad-library brand --url https://www.facebook.com/shaktimats --sta
 uv run facebook-ad-library brand --domain gymshark.com --media video --summary
 uv run facebook-ad-library diag --query "running shoes" --repeat 3 --save-dir diag-out           # one session, step by step
 uv run facebook-ad-library diag --page-id 775991435791863 --status all                            # the page view, with its count
+uv run facebook-ad-library search "running shoes" --lane 1 --summary                              # on the second configured lane
+uv run facebook-ad-library diag --lane 0 --lane-ip --repeat 3                                     # learn lane 0's exit IP three times; exit 5 if it moves
 uv run facebook-ad-library diag --slug shaktimats --save-dir diag-out                             # the plugin and the profile page
 ```
 

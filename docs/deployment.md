@@ -182,9 +182,37 @@ The pass bar is `throttled_recovered == throttled_pages` and `brand_recovered ==
 | `/health` `sessions.sessions_minted` rising steadily | expected at the higher rate: `SESSION_MAX_REQUESTS` (200) retires a session after about 200 GETs; not a fault unless `retired_by_reason` shows `session_dead` or `miss_streak` |
 | `docker stats` memory climbing | the caches are the only things that grow; check `cache.entries` and `brand_cache.entries` against `CACHE_MAX_ENTRIES` |
 
+## The lanes container
+
+Since 0.4.0 (25 Sep 2026) the service runs every Facebook request on lanes, each one a sticky residential exit ([architecture.md, Lanes](architecture.md#lanes)). The ramp (1 → 2 → 4 → 8 lanes) happens on a **second container beside production**, and production stays on the 0.3.1 image, its `.env`, its port 11500 exit, untouched, until Umer has seen the numbers.
+
+**Deploy it (nothing here touches `facebook-ad-library`):**
+
+```bash
+git clone https://github.com/haider-ecombench/facebook-ad-library-scraper.git /opt/facebook-ad-library-lanes
+cd /opt/facebook-ad-library-lanes && git checkout lanes
+cp .env.example .env.lanes    # then set: PORT=8003, API_TOKEN, LANE_COUNT=2, LANE_PROXY_TEMPLATE, LANE_PROXY_PORTS=11510-11529, FB_DOC_ID, CACHE_TTL_S=60
+docker compose -p facebook-ad-library-lanes -f docker-compose.lanes.yml up -d --build
+docker exec facebook-ad-library-lanes python -c "import urllib.request as u; print(u.urlopen('http://127.0.0.1:8003/health').read().decode())"
+```
+
+`docker-compose.lanes.yml` is name-pinned differently everywhere (`facebook-ad-library-lanes`, image tag `lanes`, `.env.lanes`, its own Compose project), so it can never replace production; `docker ps` shows both. The proxy credential is the same DataImpulse account production uses (its username already carries the country tag); the ports must be disjoint from production's 11500. Set the account's sticky rotation interval to 120 min in the DataImpulse dashboard, so `SESSION_MAX_AGE_S=7200` fits inside it. `CACHE_TTL_S=60` so a repeated harness run measures the site, not the cache.
+
+**Before any Facebook traffic, prove the ports are sticky.** From the host, with the credential from production's `.env` (measured 25 Sep 2026: ports 11510 and 11511 each kept one address across three checks 15 s apart and differed from each other; port 823 changed every call; production's 11500 had its own):
+
+```bash
+for port in 11510 11511; do for i in 1 2 3; do curl -s -x "http://USER:PASS@gw.dataimpulse.com:$port" https://api.ipify.org; echo " ($port)"; sleep 15; done; done
+```
+
+Then inside the container: `uv run facebook-ad-library diag --lane 0 --lane-ip --repeat 3` (exit 5 if the address moves) and one `search ... --lane 1 --summary`; every log line carries `lane-N port=… ip=…`.
+
+**The harness** lives in n8n `scraper-testing` (`0q7jtSF7FG0cbyBe`), the only workflow touched: `Start LANES Search Test` posts a recent 00 run's 40 keyword-country pairs as one job to `http://facebook-ad-library-lanes:8003/jobs` and polls it; `Start LANES Count Test` posts the 53-brand ADY 01 set as `count` items. Pass bars and the ramp are in the plan; the report to Umer is what the STOP is for. Rollback of the test is `docker compose -p facebook-ad-library-lanes -f docker-compose.lanes.yml down`; production never moved.
+
+**Cutting production over**, later and only with Umer's yes after the ramp: a second checkout, the production `.env` rewritten with the lane keys (`SCRAPER_PROXY`/`FALLBACK_PROXY` go), `docker compose up -d --build` from the `lanes` branch merged to `main`. Rollback is the 0.3.1 image: `git checkout <sha> && docker compose up -d --build` as under [Update, rollback, logs](#update-rollback-logs).
+
 ## Cutting the production workflow over
 
-Not applied, and not to be applied without a decision. Recorded so the shape of the change is known. It is limited to one HTTP Request node; keep its name and its connection into `Extract Dedupe And Filter`.
+**00 · Find Brands** was pointed at this service on 21 Sep 2026 (the `Apify: Facebook Ad Library` node: URL `http://facebook-ad-library:8002/facebook`, the `facebook-scraper` credential, no query parameters; body and the 300 s timeout unchanged; the node name kept because `Build Run Telemetry` reads it). The paragraph below records the shape of that change; its rollback is the URL and the credential, written in the workflow's `NOTE: in-house FB scraper + rollback` sticky.
 
 | Node | Change |
 |---|---|
