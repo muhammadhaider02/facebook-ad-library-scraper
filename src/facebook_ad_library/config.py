@@ -126,6 +126,12 @@ class Settings:
     # A run that stops here says `truncated` and hands back a cursor; the caller pages again with
     # it. 0 removes the ceiling, which is only ever right for a probe nothing is waiting on.
     page_budget_s: float = _env_float("PAGE_BUDGET_S", 240)
+    # POST /fetch: homepage reads through a lane exit with the Chrome profile (fetch.py). Fetches
+    # run beside the lanes, not on them, so this is their own ceiling; 15 s is generous for a
+    # storefront and short enough that a dead host does not hold a batch.
+    fetch_concurrency: int = _env_int("FETCH_CONCURRENCY", 4)
+    fetch_timeout_s: float = _env_float("FETCH_TIMEOUT_S", 15)
+    fetch_max_bytes: int = _env_int("FETCH_MAX_BYTES", 300_000)
     # Pages the proxied fallback may take when this address is being throttled. Small on purpose:
     # the fallback exists to answer the search Stage 0 asked for, not to page deeply. 8 pages is
     # ~80 ads, above Stage 0's 80-item ask, for roughly 20 KB of billed wire.

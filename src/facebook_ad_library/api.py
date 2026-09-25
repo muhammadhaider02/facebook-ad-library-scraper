@@ -42,6 +42,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from . import __version__, service
 from .brand import BrandResult
 from .config import settings
+from .fetch import fetch_page, normalise_url
 from .jobs import JobStore, job_payload
 from .lanes import Dispatcher, Item, Outcome, build_dispatcher
 from .scraper import Busy, FacebookError
@@ -77,6 +78,8 @@ counters = _Counters({
     "brand_withheld": 0, "brand_recovered": 0,
     # Single calls that needed a second lane, and jobs submitted.
     "lane_retries": 0, "jobs_submitted": 0, "job_items": 0,
+    # POST /fetch: homepage reads through a lane exit (fetch.py).
+    "fetch_requests": 0, "fetch_ok": 0, "fetch_failed": 0,
 })
 _FAILURE_COUNTER = {
     "RateLimited": "rate_limited", "ResultsMissing": "results_missing", "ScrapeBlocked": "blocked",
@@ -212,6 +215,11 @@ class JobItemRequest(BaseModel):
     company_domain: str | None = Field(default=None, validation_alias=AliasChoices("company_domain", "companyDomain", "domain"))
     media_type: str = Field(default="all", validation_alias=AliasChoices("media_type", "mediaType"))
     max_results: int = Field(default=10, validation_alias=AliasChoices("max_results", "maxResults"))
+    # Deep paging for a search item, as on POST /facebook: GraphQL on the lane, no rendered page,
+    # up to `max_pages` x 30 ads. The rendered page's 30-ad limit is what a second pass lifts.
+    max_pages: int = Field(default=1, validation_alias=AliasChoices("max_pages", "maxPages"))
+    novelty_stop: int = Field(default=25, validation_alias=AliasChoices("novelty_stop", "noveltyStop"))
+    empty_tol: int = Field(default=8, validation_alias=AliasChoices("empty_tol", "emptyTol"))
 
     @field_validator("country", mode="before")
     @classmethod
@@ -495,7 +503,11 @@ def _job_specs(req: JobRequest) -> list[dict]:
         kind = (it.kind or "search").strip().lower()
         if kind == "search":
             query, country, status = service.search_params(it.query, it.country, it.active_status)
-            specs.append({"id": it.id, "kind": "search", "query": query, "country": country, "status": status, "max_ads": it.max_ads})
+            pages = int(it.max_pages or 1)
+            if pages < 1 or pages > settings.page_max_pages:
+                raise ValueError(f"invalid request: item {it.id!r} asks for max_pages {pages}; 1..{settings.page_max_pages}")
+            specs.append({"id": it.id, "kind": "search", "query": query, "country": country, "status": status, "max_ads": it.max_ads,
+                          "max_pages": pages, "novelty_stop": it.novelty_stop, "empty_tol": it.empty_tol})
         elif kind == "count":
             resolver, value, status, media = service.count_params(it.page_id, it.facebook_url, it.company_domain, it.active_status, it.media_type)
             specs.append({"id": it.id, "kind": "count", "resolver": resolver, "value": value, "status": status, "media": media, "max_results": max(1, min(int(it.max_results or 10), 30))})
@@ -548,6 +560,54 @@ async def cancel_job(job_id: str):
 
 
 # --------------------------------------------------------------------------- GET /health
+
+
+class FetchRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    url: str = Field(validation_alias=AliasChoices("url", "domain", "homepage"))
+    max_bytes: int | None = Field(default=None, validation_alias=AliasChoices("max_bytes", "maxBytes"))
+    timeout_s: float | None = Field(default=None, validation_alias=AliasChoices("timeout_s", "timeoutS"))
+
+
+_fetch_gate: asyncio.Semaphore | None = None
+_fetch_turn = 0
+
+
+def _fetch_proxy() -> tuple[str | None, str | None]:
+    """The next lane's exit, round robin. Fetches ride the exits, not the lanes: no accounting."""
+    global _fetch_turn
+    if dispatcher is None or not dispatcher.lanes:
+        return None, None
+    lane = dispatcher.lanes[_fetch_turn % len(dispatcher.lanes)]
+    _fetch_turn += 1
+    return lane.proxy_url, lane.name
+
+
+@app.post("/fetch", dependencies=[Depends(require_token)])
+async def fetch(req: FetchRequest):
+    """A homepage through a lane exit with the Chrome profile. Always 200 with an answer: `ok`,
+    `status`, `final_url`, `text` (at most `max_bytes`), `error`, so a caller pairing pages to
+    brands by position never loses a slot. 400 only for a malformed `url`."""
+    global _fetch_gate
+    counters["fetch_requests"] += 1
+    try:
+        url = normalise_url(req.url)
+    except ValueError as e:
+        counters["bad_request"] += 1
+        return JSONResponse(status_code=400, content=_error_body(e, 400))
+    if _fetch_gate is None:
+        _fetch_gate = asyncio.Semaphore(max(1, settings.fetch_concurrency))
+    proxy, lane_name = _fetch_proxy()
+    timeout = req.timeout_s if req.timeout_s and req.timeout_s > 0 else settings.fetch_timeout_s
+    max_bytes = req.max_bytes if req.max_bytes and req.max_bytes > 0 else settings.fetch_max_bytes
+    async with _fetch_gate:
+        out = await asyncio.to_thread(fetch_page, url, proxy, min(timeout, 60), min(max_bytes, 2_000_000))
+    out["lane"] = lane_name
+    out["proxied"] = bool(proxy)
+    counters["fetch_ok" if out["ok"] else "fetch_failed"] += 1
+    log.info("fetch %s via %s -> %s %s %s in %ss", url, lane_name or "direct", "ok" if out["ok"] else "failed", out.get("status"), out.get("error") or "", out["seconds"])
+    return JSONResponse(content=out, headers={"X-Status": "ok" if out["ok"] else "failed", "X-Lane": lane_name or "-"})
 
 
 @app.get("/health")

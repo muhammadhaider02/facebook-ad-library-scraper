@@ -195,3 +195,40 @@ def test_facebook_and_adyntel_bodies_are_unchanged_and_carry_lane_headers(client
     r = client.post("/adyntel", json={"api_key": "k", "email": "e", "page_id": "105396194411046"})
     assert r.status_code == 200 and r.json()["number_of_ads"] == 1783 and r.json()["is_result_complete"] is True
     assert r.headers["X-Status"] == "ok" and r.headers["X-Lane"] == "lane-1"
+
+
+def test_a_deep_item_pages_on_the_lane_and_never_touches_the_cache(client, monkeypatch):
+    """`max_pages` > 1 on a job item is the second pass over a pair the rendered page capped at 30:
+    GraphQL on the lane, the cache neither answers it nor keeps its result."""
+    fake_search(monkeypatch)
+    calls = []
+
+    def _page_search(query, country, status, max_pages, novelty, empty_tol, max_ads, budget_s, cursor, collation, slot=None):
+        calls.append({"query": query, "max_pages": max_pages, "novelty": novelty, "empty_tol": empty_tol, "max_ads": max_ads, "budget_s": budget_s})
+        return {"ads": ads() * 3, "advertisers": 3, "pages": max_pages, "empty_pages": 0, "stopped_because": "end",
+                "decoded_bytes": 500, "seconds": 1.0, "next_cursor": None, "collation": "c", "truncated": False,
+                "session": {"label": "s", "requests_made": 1, "minted_now": False}}
+
+    monkeypatch.setattr(lanes, "page_search", _page_search)
+    # The rendered pass first: it lands in the cache.
+    r = submit(client, [{"id": "a", "query": "forage knife", "country": "CA"}])
+    assert poll(client, r.json()["job_id"]).json()["results"][0]["ads_found"] == 5
+    # The deep pass for the same pair: paged, not served from the cache, and not written over it.
+    r = submit(client, [{"id": "a-deep", "query": "forage knife", "country": "CA", "max_pages": 5, "max_ads": 150, "novelty_stop": 10}])
+    assert r.status_code == 202, r.text
+    p = poll(client, r.json()["job_id"]).json()
+    res = p["results"][0]
+    assert res["status"] == "ok" and res["ads_found"] == 15 and res["direct_skipped"] is True and res["cached"] is False
+    assert calls == [{"query": "forage knife", "max_pages": 5, "novelty": 10, "empty_tol": 8, "max_ads": 150, "budget_s": calls[0]["budget_s"]}]
+    assert 30 <= calls[0]["budget_s"] <= settings.page_budget_s
+    # A third, rendered, submission still sees the 5-ad page, not the 15.
+    r = submit(client, [{"id": "a2", "query": "forage knife", "country": "CA"}])
+    assert poll(client, r.json()["job_id"]).json()["results"][0]["ads_found"] == 5
+
+
+def test_max_pages_outside_the_ceiling_is_400(client, monkeypatch):
+    fake_search(monkeypatch)
+    r = submit(client, [{"id": "a", "query": "x", "country": "US", "max_pages": -1}])
+    assert r.status_code == 400 and "max_pages" in r.text
+    r = submit(client, [{"id": "a", "query": "x", "country": "US", "max_pages": settings.page_max_pages + 1}])
+    assert r.status_code == 400

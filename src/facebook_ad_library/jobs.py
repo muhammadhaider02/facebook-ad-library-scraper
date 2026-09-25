@@ -93,12 +93,20 @@ class JobStore:
 
     def _submit_one(self, job: Job, s: dict, deadline: float, max_tries: int) -> None:
         if s["kind"] == "search":
-            cached = service.cached_search(s["query"], s["country"], s["status"])
+            deep = int(s.get("max_pages", 1) or 1) > 1
+            # A deep item asks for more than the rendered page holds, so the cache (a rendered
+            # page's 30 ads) is never an answer to it and its result is never cached over one.
+            cached = None if deep else service.cached_search(s["query"], s["country"], s["status"])
             if cached is not None:
                 self._record(job, s["id"], Outcome("search", s["id"], "ok" if cached else "no_ads", items=cached, cached=True))
                 return
             item = service.search_item(s["query"], s["country"], s["status"], id=s["id"], priority=2, deadline=deadline,
                                        max_ads=s.get("max_ads", 0), max_tries=max_tries)
+            if deep:
+                item.max_pages = int(s["max_pages"])
+                item.novelty_stop = int(s.get("novelty_stop", settings.page_novelty_stop))
+                item.empty_tol = int(s.get("empty_tol", settings.page_empty_tol))
+                item.budget_s = min(settings.page_budget_s, max(30.0, deadline - time.time()))
         else:
             page_id, cached, _ = service.cached_count(s["resolver"], s["value"], s["status"], s["media"])
             if cached is not None:
@@ -116,7 +124,8 @@ class JobStore:
     def _record(self, job: Job, item_id: str, outcome: Outcome) -> None:
         s = job.specs[item_id]
         if outcome.kind == "search":
-            service.remember_search(outcome, s["query"], s["country"], s["status"])
+            if int(s.get("max_pages", 1) or 1) <= 1:
+                service.remember_search(outcome, s["query"], s["country"], s["status"])
         else:
             service.remember_count(outcome, s["resolver"], s["value"], s["status"], s["media"])
         with self._lock:
