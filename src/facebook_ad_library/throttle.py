@@ -74,4 +74,5 @@ class Throttle:
         }
 
 
-throttle = Throttle()
+# Until 0.4.0 one `throttle` lived here for the whole process, because there was one address.
+# A withheld page is a fact about one exit IP, so each lane now holds its own Throttle.

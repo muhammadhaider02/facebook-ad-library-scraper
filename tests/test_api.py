@@ -2,7 +2,7 @@ import pytest
 from conftest import fixture, set_frozen
 from fastapi.testclient import TestClient
 
-from facebook_ad_library import api
+from facebook_ad_library import api, lanes
 from facebook_ad_library.config import settings
 from facebook_ad_library.scraper import RateLimited, ResultsMissing, ScrapeBlocked, ScrapeFailed, SearchResult, classify_page
 
@@ -35,11 +35,11 @@ def client():
 def test_post_accepts_the_stage0_body_verbatim_and_returns_apify_shaped_items(client, monkeypatch):
     seen = {}
 
-    def fake_search(query, country, max_items, active_status, *, pool):
+    def fake_search(query, country, max_items, active_status, *, pool, **kw):
         seen.update(query=query, country=country, max_items=max_items, active_status=active_status)
         return result()
 
-    monkeypatch.setattr(api, "search", fake_search)
+    monkeypatch.setattr(lanes, "search", fake_search)
     r = client.post("/facebook?maxTotalChargeUsd=1", json=STAGE0_BODY)
     assert r.status_code == 200, r.text
     # the whole page is fetched and cached; maxItems is applied on the way out
@@ -53,20 +53,20 @@ def test_post_accepts_the_stage0_body_verbatim_and_returns_apify_shaped_items(cl
 
 def test_post_accepts_plain_names_and_lists(client, monkeypatch):
     seen = {}
-    monkeypatch.setattr(api, "search", lambda q, c, m, s, *, pool: seen.update(q=q, c=c) or result(ads=[]))
+    monkeypatch.setattr(lanes, "search", lambda q, c, m, s, *, pool, **kw: seen.update(q=q, c=c) or result(ads=[]))
     r = client.post("/facebook", json={"q": "running shoes", "countries": ["gb", "US"], "max": "500"})
     assert r.status_code == 200 and r.json() == [] and seen == {"q": "running shoes", "c": "GB"}
     assert api.counters["empty"] == 1
 
 
 def test_max_items_slices_the_result(client, monkeypatch):
-    monkeypatch.setattr(api, "search", lambda *a, **k: result())
+    monkeypatch.setattr(lanes, "search", lambda *a, **k: result())
     r = client.post("/facebook", json={**STAGE0_BODY, "maxItems": 2})
     assert r.status_code == 200 and len(r.json()) == 2
 
 
 def test_400_without_query_or_with_a_bad_country(client, monkeypatch):
-    monkeypatch.setattr(api, "search", lambda *a, **k: pytest.fail("should not search"))
+    monkeypatch.setattr(lanes, "search", lambda *a, **k: pytest.fail("should not search"))
     r = client.post("/facebook", json={"country": "NZ"})
     assert r.status_code == 400 and "query" in r.json()["error"]["message"]
     r = client.post("/facebook", json={"query": "x", "country": "NZL"})
@@ -84,7 +84,7 @@ def test_vendor_failures_are_503_with_the_error_envelope(client, monkeypatch, ex
     def boom(*a, **k):
         raise exc
 
-    monkeypatch.setattr(api, "search", boom)
+    monkeypatch.setattr(lanes, "search", boom)
     r = client.post("/facebook", json=STAGE0_BODY)
     assert r.status_code == 503
     body = r.json()["error"]
@@ -96,7 +96,7 @@ def test_unexpected_failure_is_500(client, monkeypatch):
     def boom(*a, **k):
         raise KeyError("ad_library_main")
 
-    monkeypatch.setattr(api, "search", boom)
+    monkeypatch.setattr(lanes, "search", boom)
     r = client.post("/facebook", json=STAGE0_BODY)
     assert r.status_code == 500 and r.json()["error"]["type"] == "KeyError" and api.counters["failed"] == 1
 
@@ -109,7 +109,7 @@ def test_bearer_token_enforced(monkeypatch):
             assert r.status_code == 401 and r.json()["error"]["status"] == 401
             r = c.post("/facebook", json=STAGE0_BODY, headers={"Authorization": "Bearer wrong"})
             assert r.status_code == 401
-            monkeypatch.setattr(api, "search", lambda *a, **k: result(ads=[]))
+            monkeypatch.setattr(lanes, "search", lambda *a, **k: result(ads=[]))
             r = c.post("/facebook", json=STAGE0_BODY, headers={"Authorization": "Bearer s3cret"})
             assert r.status_code == 200
             assert c.get("/health").status_code == 200  # health stays open
@@ -119,7 +119,7 @@ def test_bearer_token_enforced(monkeypatch):
 
 def test_identical_request_is_served_from_the_cache_whatever_the_size(client, monkeypatch):
     calls = []
-    monkeypatch.setattr(api, "search", lambda *a, **k: calls.append(1) or result())
+    monkeypatch.setattr(lanes, "search", lambda *a, **k: calls.append(1) or result())
     first = client.post("/facebook", json=STAGE0_BODY)
     second = client.post("/facebook", json={**STAGE0_BODY, "query": "  Acupressure Mat For Back Pain"})
     assert first.json() == second.json() and len(calls) == 1
@@ -134,7 +134,7 @@ def test_identical_request_is_served_from_the_cache_whatever_the_size(client, mo
 
 def test_retried_searches_are_flagged_and_still_cached(client, monkeypatch):
     calls = []
-    monkeypatch.setattr(api, "search", lambda *a, **k: calls.append(1) or result(attempts=2, misses=1, session_swaps=1))
+    monkeypatch.setattr(lanes, "search", lambda *a, **k: calls.append(1) or result(attempts=2, misses=1, session_swaps=1))
     r = client.post("/facebook", json=STAGE0_BODY)
     assert r.status_code == 200 and r.headers["X-Misses"] == "1" and r.headers["X-Session-Swaps"] == "1" and api.counters["retried"] == 1
     client.post("/facebook", json=STAGE0_BODY)
@@ -155,15 +155,19 @@ def test_health_shape(client):
 
 def _throttled(monkeypatch, count, fallback_ads=None, proxy="http://p:1"):
     """A rendered page that reports `count` ads and serves none, which is what Meta does to a
-    throttled address: no 403, no 429, just an empty list above a correct total."""
+    throttled exit: no 403, no 429, just an empty list above a correct total. `proxy=None`
+    stands for a lane whose GraphQL recovery cannot run at all."""
     from facebook_ad_library import api as m
-    from facebook_ad_library.scraper import SearchResult
+    from facebook_ad_library.scraper import ScrapeBlocked, SearchResult
 
-    monkeypatch.setattr(m, "search", lambda *a, **k: SearchResult(
+    monkeypatch.setattr(lanes, "search", lambda *a, **k: SearchResult(
         query="kw", country="US", ads=[], attempts=1, misses=0, seconds=0.1, count=count))
-    monkeypatch.setattr(m, "fallback_proxy_url", lambda: proxy)
+    if proxy is None:
+        def refused(*a, **k):
+            raise ScrapeBlocked("graphql paging needs a proxy")
+        monkeypatch.setattr(lanes, "page_search", refused)
     if fallback_ads is not None:
-        monkeypatch.setattr(m, "page_search", lambda *a, **k: {
+        monkeypatch.setattr(lanes, "page_search", lambda *a, **k: {
             "ads": fallback_ads, "advertisers": len(fallback_ads), "pages": 3, "empty_pages": 0,
             "stopped_because": "Meta dropped the cursor (true end)", "decoded_bytes": 1000,
             "seconds": 5.0, "next_cursor": None, "collation": "c", "truncated": False,
@@ -185,7 +189,8 @@ def test_a_withheld_payload_is_a_503_not_an_empty_success(monkeypatch, client):
     _throttled(monkeypatch, count=1039, proxy=None)
     r = client.post("/facebook", json={"query": "running shoes", "country": "US"})
     assert r.status_code == 503
-    assert "served none" in r.json()["error"]["message"]
+    assert "served none" in r.json()["error"]["message"] and r.json()["error"]["kind"] == "blocked"
+    assert r.headers["X-Status"] == "blocked"
 
 
 def test_a_keyword_with_genuinely_no_ads_is_still_an_empty_200(monkeypatch, client):
@@ -193,7 +198,7 @@ def test_a_keyword_with_genuinely_no_ads_is_still_an_empty_200(monkeypatch, clie
     niche keyword pays for the residential exit."""
     called = []
     m = _throttled(monkeypatch, count=0)
-    monkeypatch.setattr(m, "page_search", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(lanes, "page_search", lambda *a, **k: called.append(1))
     r = client.post("/facebook", json={"query": "nothing here", "country": "NZ"})
     assert r.status_code == 200 and r.json() == []
     assert not called, "don't proxy what isn't blocked"
@@ -211,9 +216,8 @@ def test_the_second_search_skips_the_direct_get_while_throttled(monkeypatch, cli
         searches.append(1)
         return SearchResult(query="kw", country="US", ads=[], attempts=1, misses=0, seconds=0.1, count=500)
 
-    monkeypatch.setattr(m, "search", fake_search)
-    monkeypatch.setattr(m, "fallback_proxy_url", lambda: "http://p:1")
-    monkeypatch.setattr(m, "page_search", lambda *a, **k: {
+    monkeypatch.setattr(lanes, "search", fake_search)
+    monkeypatch.setattr(lanes, "page_search", lambda *a, **k: {
         "ads": [ad], "advertisers": 1, "pages": 1, "empty_pages": 0, "stopped_because": "true end",
         "decoded_bytes": 100, "seconds": 1.0, "next_cursor": None, "collation": "c",
         "truncated": False, "session": {"label": "s", "requests_made": 1, "minted_now": False},
@@ -228,10 +232,10 @@ def test_the_second_search_skips_the_direct_get_while_throttled(monkeypatch, cli
 def test_a_direct_page_with_ads_puts_the_direct_path_back(monkeypatch, client):
     from facebook_ad_library import api as m
     from facebook_ad_library.scraper import SearchResult
-    from facebook_ad_library.throttle import throttle
 
+    throttle = m.dispatcher.lanes[0].throttle
     ad = {"ad_archive_id": "7", "page_id": "3", "snapshot": {"page_id": "3"}}
-    monkeypatch.setattr(m, "search", lambda *a, **k: SearchResult(
+    monkeypatch.setattr(lanes, "search", lambda *a, **k: SearchResult(
         query="kw", country="US", ads=[ad], attempts=1, misses=0, seconds=0.1, count=30))
     throttle.seen()
     throttle.clear()  # the shortcut is off; this request goes direct and succeeds
@@ -255,10 +259,9 @@ def test_the_recovery_pages_to_the_cap_not_to_max_items(monkeypatch, client):
                 "decoded_bytes": 10, "seconds": 1.0, "next_cursor": None, "collation": "c",
                 "truncated": False, "session": {"label": "s", "requests_made": 1, "minted_now": False}}
 
-    monkeypatch.setattr(m, "search", lambda *a, **k: SearchResult(
+    monkeypatch.setattr(lanes, "search", lambda *a, **k: SearchResult(
         query="kw", country="US", ads=[], attempts=1, misses=0, seconds=0.1, count=900))
-    monkeypatch.setattr(m, "fallback_proxy_url", lambda: "http://p:1")
-    monkeypatch.setattr(m, "page_search", fake_page_search)
+    monkeypatch.setattr(lanes, "page_search", fake_page_search)
 
     client.post("/facebook", json={"query": "a", "country": "US", "maxItems": 80})
     assert seen["max_ads"] == 0, "no ad target unless one is asked for; the page cap decides"

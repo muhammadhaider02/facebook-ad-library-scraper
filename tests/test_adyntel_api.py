@@ -4,7 +4,7 @@ import pytest
 from conftest import Clock, fixture, set_frozen
 from fastapi.testclient import TestClient
 
-from facebook_ad_library import api
+from facebook_ad_library import api, lanes
 from facebook_ad_library.brand import BrandResult
 from facebook_ad_library.cache import TTLCache
 from facebook_ad_library.config import settings
@@ -37,8 +37,8 @@ def brand(found=True, **kw) -> BrandResult:
 def fake_lookup(seen: list, results):
     queue = list(results) if isinstance(results, list) else [results]
 
-    def _lookup(*, active_status, media_type, pool, **kw):
-        seen.append({"active_status": active_status, "media_type": media_type, **kw})
+    def _lookup(*, active_status, media_type, pool, deadline=None, recovery_pool=None, **kw):
+        seen.append({"active_status": active_status, "media_type": media_type, **{k: v for k, v in kw.items() if v is not None}})
         r = queue.pop(0) if len(queue) > 1 else queue[0]
         if isinstance(r, Exception):
             raise r
@@ -49,7 +49,7 @@ def fake_lookup(seen: list, results):
 
 def test_accepts_the_01_body_verbatim_and_answers_the_vendor_envelope(client, monkeypatch):
     seen: list = []
-    monkeypatch.setattr(api, "lookup", fake_lookup(seen, brand()))
+    monkeypatch.setattr(lanes, "lookup", fake_lookup(seen, brand()))
     r = client.post("/adyntel", json=ADY01_BODY)
     assert r.status_code == 200, r.text
     assert seen == [{"active_status": "active", "media_type": "all", "company_domain": "gymshark.com"}]
@@ -63,7 +63,7 @@ def test_accepts_the_01_body_verbatim_and_answers_the_vendor_envelope(client, mo
 
 def test_accepts_the_02_bodies_and_forces_live_for_video(client, monkeypatch):
     seen: list = []
-    monkeypatch.setattr(api, "lookup", fake_lookup(seen, brand()))
+    monkeypatch.setattr(lanes, "lookup", fake_lookup(seen, brand()))
     assert client.post("/adyntel", json=ADY02_CREATIVE).status_code == 200
     assert seen[-1] == {"active_status": "all", "media_type": "all", "company_domain": "gymshark.com"}
     api.brand_cache.clear()
@@ -76,7 +76,7 @@ def test_accepts_the_02_bodies_and_forces_live_for_video(client, monkeypatch):
 
 def test_page_id_comes_first_and_is_a_string(client, monkeypatch):
     seen: list = []
-    monkeypatch.setattr(api, "lookup", fake_lookup(seen, brand(resolver="page_id")))
+    monkeypatch.setattr(lanes, "lookup", fake_lookup(seen, brand(resolver="page_id")))
     r = client.post("/adyntel", json={"page_id": 775991435791863, "facebook_url": "https://www.facebook.com/x", "company_domain": "x.com"})
     assert r.status_code == 200 and seen == [{"active_status": "active", "media_type": "all", "page_id": "775991435791863"}]
     assert r.headers["X-Resolver"] == "page_id" and api.counters["adyntel_by_page_id"] == 1
@@ -84,7 +84,7 @@ def test_page_id_comes_first_and_is_a_string(client, monkeypatch):
 
 def test_not_found_is_an_empty_object_with_200(client, monkeypatch):
     seen: list = []
-    monkeypatch.setattr(api, "lookup", fake_lookup(seen, brand(found=False, note="no ad mentions x.com")))
+    monkeypatch.setattr(lanes, "lookup", fake_lookup(seen, brand(found=False, note="no ad mentions x.com")))
     r = client.post("/adyntel", json={"company_domain": "x.com"})
     assert r.status_code == 200 and r.json() == {} and r.headers["X-Found"] == "0" and r.headers["X-Resolved-Page-Id"] == ""
     assert api.counters["adyntel_not_found"] == 1 and api.counters["adyntel_found"] == 0
@@ -101,7 +101,7 @@ def test_not_found_is_an_empty_object_with_200(client, monkeypatch):
     ],
 )
 def test_vendor_failures_are_503_with_the_envelope(client, monkeypatch, exc, counter):
-    monkeypatch.setattr(api, "lookup", fake_lookup([], exc))
+    monkeypatch.setattr(lanes, "lookup", fake_lookup([], exc))
     r = client.post("/adyntel", json={"page_id": "775991435791863"})
     assert r.status_code == 503 and r.json()["error"]["type"] == type(exc).__name__ and api.counters[counter] == 1
 
@@ -114,7 +114,7 @@ def test_bad_bodies_are_400_before_any_lookup(client, monkeypatch, body):
     def never(**kw):
         raise AssertionError("lookup must not run")
 
-    monkeypatch.setattr(api, "lookup", never)
+    monkeypatch.setattr(lanes, "lookup", never)
     r = client.post("/adyntel", json=body)
     assert r.status_code == 400 and r.json()["error"]["status"] == 400 and api.counters["bad_request"] == 1
 
@@ -128,7 +128,7 @@ def test_requires_the_token_like_facebook(client):
 
 def test_page_view_is_cached_per_status_and_media(client, monkeypatch):
     seen: list = []
-    monkeypatch.setattr(api, "lookup", fake_lookup(seen, brand(resolver="page_id")))
+    monkeypatch.setattr(lanes, "lookup", fake_lookup(seen, brand(resolver="page_id")))
     a = client.post("/adyntel", json={"page_id": "129669023798560"})
     b = client.post("/adyntel", json={"page_id": "129669023798560", "max_results": 2})
     assert a.status_code == b.status_code == 200 and len(seen) == 1
@@ -139,7 +139,7 @@ def test_page_view_is_cached_per_status_and_media(client, monkeypatch):
 
 def test_domain_resolution_is_reused_across_filters(client, monkeypatch):
     seen: list = []
-    monkeypatch.setattr(api, "lookup", fake_lookup(seen, brand()))
+    monkeypatch.setattr(lanes, "lookup", fake_lookup(seen, brand()))
     client.post("/adyntel", json=ADY02_CREATIVE)  # resolves gymshark.com -> the page id (status all)
     r = client.post("/adyntel", json=ADY02_VIDEO)  # same brand, another filter: by id, no resolution
     assert r.status_code == 200 and r.headers["X-Resolver"] == "company_domain" and r.headers["X-Cache"] == "miss"
@@ -151,7 +151,7 @@ def test_domain_resolution_is_reused_across_filters(client, monkeypatch):
 
 def test_not_found_by_url_is_not_pinned_but_an_unknown_id_is(client, monkeypatch):
     seen: list = []
-    monkeypatch.setattr(api, "lookup", fake_lookup(seen, brand(found=False)))
+    monkeypatch.setattr(lanes, "lookup", fake_lookup(seen, brand(found=False)))
     client.post("/adyntel", json={"facebook_url": "https://www.facebook.com/nobody"})
     client.post("/adyntel", json={"facebook_url": "https://www.facebook.com/nobody"})
     assert len(seen) == 2
@@ -200,12 +200,13 @@ def test_a_withheld_brand_lookup_is_a_503_not_a_found_page_with_no_ads(monkeypat
     res = BrandResult("page_id", "775991435791863", "active", "all")
     res.found, res.page_id, res.count, res.ads = True, "775991435791863", 1039, []
     res.withheld, res.recovery_gets = 1, 1
-    monkeypatch.setattr(m, "lookup", lambda *a, **k: res)
+    monkeypatch.setattr(lanes, "lookup", lambda *a, **k: res)
 
     r = client.post("/adyntel", json={"page_id": "775991435791863"})
     assert r.status_code == 503
     msg = r.json()["error"]["message"]
-    assert "served none" in msg and "even through the fallback proxy" in msg
+    assert "served none" in msg and "on this exit" in msg
+    assert r.json()["error"]["kind"] == "blocked" and r.json()["error"]["type"] == "ScrapeBlocked"
 
 
 def test_a_brand_with_genuinely_no_live_ads_is_still_a_normal_answer(monkeypatch, client):
@@ -215,7 +216,7 @@ def test_a_brand_with_genuinely_no_live_ads_is_still_a_normal_answer(monkeypatch
 
     res = BrandResult("page_id", "1", "active", "all")
     res.found, res.page_id, res.count, res.ads, res.info = True, "1", 0, [], {"page_name": "Quiet"}
-    monkeypatch.setattr(m, "lookup", lambda *a, **k: res)
+    monkeypatch.setattr(lanes, "lookup", lambda *a, **k: res)
 
     r = client.post("/adyntel", json={"page_id": "1"})
     assert r.status_code == 200 and r.json()["number_of_ads"] == 0

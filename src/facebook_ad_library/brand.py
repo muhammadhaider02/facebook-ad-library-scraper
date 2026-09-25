@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING, Callable
 
 from . import scraper as wire
 from .config import settings
-from .proxy import fallback_proxy_url
 from .scraper import (
     BudgetExceeded,
     Page,
@@ -85,10 +84,11 @@ def lookup_cost_s() -> float:
 class _Run:
     """The state of one lookup: its lease, its deadline and the recovery ladder every GET shares."""
 
-    def __init__(self, lease: "_Lease", deadline: float, result: BrandResult) -> None:
+    def __init__(self, lease: "_Lease", deadline: float, result: BrandResult, recovery_pool: "_SessionPool | None" = None) -> None:
         self.lease = lease
         self.deadline = deadline
         self.result = result
+        self.recovery_pool = recovery_pool
         self.gets = 0
 
     def _guard(self, what: str) -> None:
@@ -161,21 +161,21 @@ class _Run:
             return kind, view, html
 
     def recover(self, url: str, what: str) -> "PageView | None":
-        """The same page, fetched through the fallback proxy. `None` when there is no fallback
-        proxy to try or the attempt did not produce ads.
+        """The same page, fetched through the recovery pool. `None` when there is no recovery
+        pool (a lane: the page view is already on a residential exit, so the honest answer is
+        "withheld on this exit" and the lane runner retries it on another lane) or the attempt
+        did not produce ads.
 
         Meta serves a throttled address the page, the page name and a correct total, and simply
         omits the ads - no 403, no 429, nothing to catch. Measured on the VPS 24 Sep 2026: page
         775991435791863 answered count=1039 ads=0 direct, and count=1039 ads=30 through a
         residential exit in the same minute. Only a page that showed that signature is refetched,
         so an honestly empty page never costs a billed GET."""
-        from .session import recovery_pool
-
-        if not fallback_proxy_url():
+        if self.recovery_pool is None:
             return None
         log.warning("%s: total above zero with no ads; refetching through the fallback proxy", what)
         try:
-            with recovery_pool.lease(timeout=max(0.5, self.deadline - time.time())) as lease:
+            with self.recovery_pool.lease(timeout=max(0.5, self.deadline - time.time())) as lease:
                 _, _, html = lease.session.fetch_url(url, self.deadline)
         except (RateLimited, SessionDead, ScrapeFailed, ScrapeBlocked, BudgetExceeded) as e:
             log.warning("%s: the fallback proxy did not answer either: %s", what, e)
@@ -224,9 +224,11 @@ def lookup(
     media_type: str = "all",
     pool: "_SessionPool",
     deadline: float | None = None,
+    recovery_pool: "_SessionPool | None" = None,
 ) -> BrandResult:
     """The Ad Library's answer for one brand. Exactly one of `page_id`, `facebook_url` and
-    `company_domain` is used, in that order of preference."""
+    `company_domain` is used, in that order of preference. `recovery_pool` is where a withheld
+    page view is refetched; a lane passes none and handles the withheld page itself."""
     status = wire.normalise_active_status(active_status)
     media = wire.normalise_media_type(media_type)
     if media == "video":
@@ -263,7 +265,7 @@ def lookup(
     queued = time.time()
     with pool.lease(timeout=max(0.5, deadline - queued)) as lease:
         result.queue_s = round(time.time() - queued, 1)
-        run = _Run(lease, deadline, result)
+        run = _Run(lease, deadline, result, recovery_pool)
 
         # 1. resolve
         candidate: str | None = None

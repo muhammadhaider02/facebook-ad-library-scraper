@@ -29,28 +29,71 @@ def _env_bool(name: str, default: bool) -> bool:
 class Settings:
     # Shared secret n8n sends as `Authorization: Bearer <token>`. Empty = no auth (local testing only).
     api_token: str = os.environ.get("API_TOKEN", "").strip()
-    # Optional proxy for every request. Not needed; see .env.example.
+    # --- Lanes (0.4.0, 25 Sep 2026): every request to Facebook leaves through a lane, and every
+    # lane is one sticky residential exit with its own cookie jars, pacing and limiter. The VPS's
+    # own address is never used: the same service answers 01's 50+ checks and 02's research ads,
+    # so a block on that address would stop the whole pipeline, not just sourcing. See lanes.py.
+    lane_count: int = _env_int("LANE_COUNT", 1)
+    # `http://user__cr.us:pass@gw.dataimpulse.com:{port}`; `{port}` is filled from LANE_PROXY_PORTS.
+    lane_proxy_template: str = os.environ.get("LANE_PROXY_TEMPLATE", "").strip()
+    # Sticky ports, ranges and lists: `11510-11529,11540`. The first LANE_COUNT become lanes, the
+    # rest are the reserve a blocked lane rotates onto for a fresh exit IP.
+    lane_proxy_ports: str = os.environ.get("LANE_PROXY_PORTS", "").strip()
+    # Escape hatch: full proxy specs, comma-separated, one per lane, used when the template is empty.
+    lane_proxies: str = os.environ.get("LANE_PROXIES", "").strip()
+    # A lane without a proxy refuses to start. Only CI, which has no proxy and no production
+    # traffic, sets this false.
+    lane_require_proxy: bool = _env_bool("LANE_REQUIRE_PROXY", True)
+    # Where a lane learns its exit IP (a ~60 byte GET through its own proxy), and how often it
+    # re-checks between items. Empty disables the check; 0 checks only at mint.
+    lane_ip_check_url: str = os.environ.get("LANE_IP_CHECK_URL", "https://api.ipify.org?format=json").strip()
+    lane_ip_check_s: float = _env_float("LANE_IP_CHECK_S", 600)
+    # A hard block moves the lane to the next reserve port (a new IP) when set.
+    lane_rotate_on_block: bool = _env_bool("LANE_ROTATE_ON_BLOCK", True)
+    # Cooldown after a block; doubles while the probe after it keeps blocking, up to the max; a
+    # lane whose probes fail three times in a row is `blocked` until the retry interval passes.
+    lane_cooldown_s: float = _env_float("LANE_COOLDOWN_S", 900)
+    lane_cooldown_max_s: float = _env_float("LANE_COOLDOWN_MAX_S", 3600)
+    lane_blocked_retry_s: float = _env_float("LANE_BLOCKED_RETRY_S", 3600)
+    lane_error_cooldown_after: int = _env_int("LANE_ERROR_COOLDOWN_AFTER", 3)
+    lane_error_cooldown_s: float = _env_float("LANE_ERROR_COOLDOWN_S", 120)
+    # Tries per item across different lanes, and withheld pages in a row that retire a lane's
+    # jars and move it to a fresh port (the IP is what is throttled, not the jar).
+    lane_max_tries: int = _env_int("LANE_MAX_TRIES", 3)
+    lane_withheld_rotate: int = _env_int("LANE_WITHHELD_ROTATE", 3)
+    # Per-try budgets, seconds. Short on purpose: a 429 must move the search to another lane, not
+    # nap 60 s on the exit that just refused it (scraper.search skips the nap when it cannot fit).
+    lane_search_budget_s: float = _env_float("LANE_SEARCH_BUDGET_S", 90)
+    lane_count_budget_s: float = _env_float("LANE_COUNT_BUDGET_S", 20)
+    # --- Batch jobs (POST /jobs): bounds on the in-memory store and queue. ---
+    job_max_items: int = _env_int("JOB_MAX_ITEMS", 200)
+    job_store_max: int = _env_int("JOB_STORE_MAX", 50)
+    job_queue_max: int = _env_int("JOB_QUEUE_MAX", 1000)
+    job_item_max_wait_s: float = _env_float("JOB_ITEM_MAX_WAIT_S", 600)
+    job_ttl_s: float = _env_float("JOB_TTL_S", 7200)
+    job_poll_max_wait_s: float = _env_float("JOB_POLL_MAX_WAIT_S", 50)
+    # Retired in 0.4.0 and read only to warn at startup: lanes replaced the direct path and the
+    # single recovery exit. `proxy_url()` still parses these forms for the CLI and the tests.
     proxy: str | None = os.environ.get("SCRAPER_PROXY", "").strip() or None
-    # Proxy for the RECOVERY path only: the GraphQL fallback and deep paging. Separate from
-    # SCRAPER_PROXY on purpose. The rendered page is ~1 MB and the throttle withholds its ads
-    # anyway, so routing it through a residential exit pays a megabyte for a page we already
-    # know is empty; GraphQL answers the same search at ~7 KB an ad. Set this and leave
-    # SCRAPER_PROXY empty to keep the ordinary path direct. Falls back to SCRAPER_PROXY.
     fallback_proxy: str | None = os.environ.get("FALLBACK_PROXY", "").strip() or None
     # curl_cffi impersonation target. Meta answers non-browser TLS with 400 error pages.
     impersonate: str = os.environ.get("FB_IMPERSONATE", "chrome").strip() or "chrome"
     request_timeout_s: float = _env_float("REQUEST_TIMEOUT_S", 30)
     # Extra page GETs allowed when the page arrives without its results blob (about 1 in 4).
     ssr_retries: int = _env_int("SSR_RETRIES", 2)
-    max_concurrency: int = _env_int("MAX_CONCURRENCY", 3)
-    session_pool_size: int = _env_int("SESSION_POOL_SIZE", 3)
-    # Session retirement thresholds: page GETs made and age in seconds, whichever first.
+    # Session retirement thresholds: page GETs made and age in seconds, whichever first. Keep the
+    # age at or below the proxy vendor's sticky rotation interval (DataImpulse: 120 min set in
+    # the dashboard), so a jar and its exit IP live and die together.
     session_max_requests: int = _env_int("SESSION_MAX_REQUESTS", 200)
     session_max_age_s: float = _env_float("SESSION_MAX_AGE_S", 7200)
     # Random gap between two requests on one session.
     spacing_min_s: float = _env_float("SPACING_MIN_S", 2)
     spacing_max_s: float = _env_float("SPACING_MAX_S", 5)
-    # Global GETs per minute from this host, across sessions and both endpoints.
+    # Gap between two GraphQL pages on one session. The site's own scroll pagination is this
+    # fast; the rendered-page gap above would make an 8-page recovery take ~40 s.
+    gql_spacing_min_s: float = _env_float("GQL_SPACING_MIN_S", 1)
+    gql_spacing_max_s: float = _env_float("GQL_SPACING_MAX_S", 2)
+    # GETs per minute PER LANE (one exit IP), across both endpoints.
     rate_limit_per_min: int = _env_int("RATE_LIMIT_PER_MIN", 20)
     # Sleep on an HTTP 429 before the single retry.
     rate_limit_sleep_s: float = _env_float("RATE_LIMIT_SLEEP_S", 60)

@@ -344,16 +344,24 @@ class GraphSession:
         "Upgrade-Insecure-Requests": "1",
     }
 
-    def __init__(self, label: str = "gql") -> None:
+    def __init__(self, label: str = "gql", *, proxy: str | None = None, transport=None, limiter=None) -> None:
+        """Without `proxy` (and without a `transport`), the retired FALLBACK_PROXY is used, and its
+        absence is refused: Meta answers /api/graphql/ from a bare host with 1675004 (measured
+        2026-09-22, commit c81d0a3). A lane passes its own exit, and its limiter so GraphQL pages
+        count against the same per-IP pace as its rendered pages."""
         from .session import CurlTransport
 
-        proxy = fallback_proxy_url()
-        if not proxy:
-            raise ScrapeBlocked(
-                "graphql paging needs FALLBACK_PROXY (or SCRAPER_PROXY): Meta refuses /api/graphql/ from this address "
-                "(measured 2026-09-22, commit c81d0a3)"
-            )
-        self.transport = CurlTransport(proxy=proxy)
+        if transport is None:
+            if proxy is None:
+                proxy = fallback_proxy_url()
+            if not proxy:
+                raise ScrapeBlocked(
+                    "graphql paging needs a proxy (a lane exit, or FALLBACK_PROXY for the legacy path): "
+                    "Meta refuses /api/graphql/ from this address (measured 2026-09-22, commit c81d0a3)"
+                )
+            transport = CurlTransport(proxy=proxy)
+        self.transport = transport
+        self.limiter = limiter
         self.label = f"{label}-{uuid.uuid4().hex[:6]}"
         self.tokens = None
         self.doc_id = ""
@@ -381,7 +389,7 @@ class GraphSession:
     def _pace(self) -> None:
         if not self.last_call:
             return
-        wait = self.last_call + random.uniform(settings.spacing_min_s, settings.spacing_max_s) - time.time()
+        wait = self.last_call + random.uniform(settings.gql_spacing_min_s, settings.gql_spacing_max_s) - time.time()
         if wait > 0:
             time.sleep(wait)
 
@@ -451,6 +459,8 @@ class GraphSession:
         delays = (1.0, 3.0)
         for attempt in range(len(delays) + 1):
             self._pace()
+            if self.limiter is not None:
+                self.limiter.wait()
             try:
                 r = self.transport.post(GRAPHQL, data=form, headers=headers)
             except Exception as e:  # noqa: BLE001
@@ -571,15 +581,53 @@ def reset_breaker() -> None:
 
 
 def _live_session(query: str, country: str, status: str) -> "GraphSession":
-    """The shared session, minted on first use and re-minted when it expires. Reuse is what makes
-    GraphQL cheaper than the rendered page: the mint is amortised over every keyword it serves,
-    and a mint that is paid over and over is the whole cost of this module going wrong."""
+    """The legacy shared session (CLI probes and tests without a lane), minted on first use and
+    re-minted when it expires. Reuse is what makes GraphQL cheaper than the rendered page: the
+    mint is amortised over every keyword it serves, and a mint that is paid over and over is the
+    whole cost of this module going wrong. A lane holds the same thing in a `GraphSlot`."""
     global _session
     if _session is None or not _session.ready:
         breaker.check()
         _session = GraphSession()
         _session.mint(query, country, status)
     return _session
+
+
+class GraphSlot:
+    """One lane's GraphQL session and mint breaker, behind a lock. What `_live_session` and the
+    module `breaker` are for the legacy path, per lane: the session is bound to the lane's exit
+    (the challenge cookie and the `lsd` token are tied to the address that minted them), and a
+    refused exit must close only its own lane's breaker, never everyone's."""
+
+    def __init__(self, factory: Callable[[], "GraphSession"], breaker: "MintBreaker | None" = None) -> None:
+        self._factory = factory
+        self.breaker = breaker or MintBreaker()
+        self._lock = threading.Lock()
+        self._session: GraphSession | None = None
+
+    def live(self, query: str, country: str, status: str) -> "GraphSession":
+        with self._lock:
+            if self._session is None or not self._session.ready:
+                self.breaker.check()
+                self._session = self._factory()
+                self._session.mint(query, country, status)
+            return self._session
+
+    def reset(self) -> None:
+        with self._lock:
+            if self._session is not None:
+                self._session.retired = True
+            self._session = None
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            s = self._session
+            return {
+                "label": s.label if s else None,
+                "requests_made": s.requests_made if s else 0,
+                "age_s": round(time.time() - s.minted_at, 1) if s and s.minted_at else None,
+                "breaker_open": self.breaker.snapshot().get("open", False),
+            }
 
 
 def reset_session() -> None:
@@ -602,6 +650,7 @@ def page_search(
     budget_s: float = 0,
     cursor: str | None = None,
     collation: str | None = None,
+    slot: "GraphSlot | None" = None,
 ) -> dict:
     """Page one keyword and report what it cost. An ordinary empty result is not an error.
 
@@ -618,7 +667,9 @@ def page_search(
     gql_status = ACTIVE_STATUS_GQL[status]
     max_pages = max(1, min(int(max_pages), MAX_PAGES_CEILING))
 
-    s = _live_session(query, country, status)
+    # A lane supplies its own session and breaker; without one the legacy module globals serve.
+    s = slot.live(query, country, status) if slot is not None else _live_session(query, country, status)
+    brk = slot.breaker if slot is not None else breaker
     before_bytes = s.decoded_bytes
     minted_now = s.requests_made == 0
     collation = collation or str(uuid.uuid4())
@@ -646,10 +697,10 @@ def page_search(
             # A session that never returned a page is not a session worth replacing: the next
             # mint would be refused the same way, and a mint is ~1 MB. Count it and re-raise.
             if not pages:
-                breaker.failed()
+                brk.failed()
             raise
         if not pages:
-            breaker.ok()  # this exit still works; forget any earlier run of failures
+            brk.ok()  # this exit still works; forget any earlier run of failures
         new = set()
         for a in page_ads:
             pid = str(a.get("page_id") or (a.get("snapshot") or {}).get("page_id") or "")

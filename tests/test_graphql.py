@@ -142,7 +142,7 @@ def test_graphql_refuses_to_run_without_a_proxy(monkeypatch):
     """Meta refuses /api/graphql/ from the VPS address, so an unproxied attempt is a configuration
     error worth failing loudly on rather than a scrape that mysteriously returns nothing."""
     monkeypatch.setattr(g, "fallback_proxy_url", lambda: None)
-    with pytest.raises(ScrapeBlocked, match="needs FALLBACK_PROXY"):
+    with pytest.raises(ScrapeBlocked, match="needs a proxy"):
         g.GraphSession()
 
 

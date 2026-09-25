@@ -115,24 +115,103 @@ def make_pool(transports: list[FakeFacebook], size: int = 2, max_concurrency: in
     return _SessionPool(size, max_concurrency, factory, RateLimiter(1000, clock, sleep), clock, sleep)
 
 
+class StubSession:
+    """Stands in for a minted GraphQL session: a script of (ads, cursor) answers, one per page."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.label = "stub"
+        self.requests_made = 0
+        self.decoded_bytes = 0
+        self.minted_at = 0.0
+        self.retired = False
+        self.asked = []
+
+    @property
+    def ready(self) -> bool:
+        return not self.retired
+
+    def mint(self, query, country, status):
+        self.minted_at = 1.0
+
+    def search_page(self, query, country, cursor, collation, first=30, active_status="ACTIVE"):
+        self.asked.append(cursor)
+        self.requests_made += 1
+        self.decoded_bytes += 1000
+        return self.script.pop(0) if self.script else ([], None)
+
+
+def make_lane(transports: list[FakeFacebook], lane_id: int = 1, clock: Clock | None = None, sleeps: list | None = None,
+              gql_script: list | None = None, ports: list[int] | None = None, allocator=None, ip_transport: FakeFacebook | None = None,
+              per_minute: int = 1000):
+    """A lane on scripted transports. `transports` are handed out in order for every session the
+    lane mints (the last one repeats); `gql_script` scripts its GraphQL session; `ip_transport`
+    answers the exit-ip check (None: the check is off for this lane)."""
+    from facebook_ad_library.lanes import Lane
+    from facebook_ad_library.proxy import LaneProxy, PortAllocator
+
+    clock = clock or Clock()
+    rec = sleeps if sleeps is not None else []
+    sleep = lambda s: (rec.append(s), clock.advance(s))  # noqa: E731
+    queue = list(transports)
+    ports = ports or [11500 + lane_id]
+    allocator = allocator or PortAllocator([LaneProxy(p, f"http://u:p@proxy:{p}") for p in ports])
+
+    def factory(proxy):
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    lane = Lane(
+        lane_id, allocator, transport_factory=factory,
+        ip_transport_factory=(lambda proxy: ip_transport) if ip_transport is not None else None,
+        clock=clock, sleep=sleep, limiter=RateLimiter(per_minute, clock, sleep),
+    )
+    if gql_script is not None:
+        from facebook_ad_library.graphql import GraphSlot, MintBreaker
+
+        stub = StubSession(gql_script)
+        lane.gql = GraphSlot(factory=lambda: stub, breaker=MintBreaker(clock=clock))
+        lane.gql_stub = stub
+    return lane
+
+
+def make_dispatcher(lanes, clock: Clock | None = None, allocator=None):
+    """A dispatcher whose workers are NOT started: tests drive `run_item_once` by hand."""
+    from facebook_ad_library.lanes import Dispatcher
+
+    return Dispatcher(list(lanes), clock=clock or Clock(), allocator=allocator or lanes[0].allocator)
+
+
 @pytest.fixture(autouse=True)
 def fast_settings():
-    """No pacing gaps and no rate-limit naps unless a test sets them, and clean counters."""
+    """No pacing gaps and no rate-limit naps unless a test sets them, clean counters, and one
+    proxy-less lane with the exit-ip check off, so the API tests never touch the network."""
     from facebook_ad_library import api, session
     from facebook_ad_library.config import settings
 
     before = {
         k: getattr(settings, k)
         for k in (
-            "api_token", "spacing_min_s", "spacing_max_s", "rate_limit_sleep_s", "ssr_retries", "miss_streak_retire",
-            "scrape_budget_s", "brand_budget_s", "brand_ssr_retries", "brand_profile_fallback", "adyntel_cache_ttl_s",
+            "api_token", "spacing_min_s", "spacing_max_s", "gql_spacing_min_s", "gql_spacing_max_s", "rate_limit_sleep_s",
+            "ssr_retries", "miss_streak_retire", "scrape_budget_s", "brand_budget_s", "brand_ssr_retries", "brand_profile_fallback",
+            "adyntel_cache_ttl_s", "lane_count", "lane_proxy_template", "lane_proxy_ports", "lane_proxies", "lane_require_proxy",
+            "lane_ip_check_url", "lane_ip_check_s", "lane_max_tries", "lane_cooldown_s", "lane_cooldown_max_s", "lane_blocked_retry_s",
+            "lane_error_cooldown_after", "lane_error_cooldown_s", "lane_withheld_rotate", "lane_rotate_on_block",
+            "lane_search_budget_s", "lane_count_budget_s", "fallback_max_pages",
+            "job_max_items", "job_store_max", "job_queue_max", "job_item_max_wait_s", "job_ttl_s", "job_poll_max_wait_s",
         )
     }
     set_frozen(settings, "api_token", "")  # a filled local .env must not turn the API tests into 401s
     set_frozen(settings, "spacing_min_s", 0)
     set_frozen(settings, "spacing_max_s", 0)
+    set_frozen(settings, "gql_spacing_min_s", 0)
+    set_frozen(settings, "gql_spacing_max_s", 0)
+    set_frozen(settings, "lane_count", 1)
+    set_frozen(settings, "lane_proxy_template", "")
+    set_frozen(settings, "lane_proxy_ports", "")
+    set_frozen(settings, "lane_proxies", "")
+    set_frozen(settings, "lane_require_proxy", False)
+    set_frozen(settings, "lane_ip_check_url", "")
     session.reset_counters()
-    session.pool.reset()
     api.cache.clear()
     api.brand_cache.clear()
     for k in api.counters:
@@ -153,16 +232,14 @@ def budget():
 
 
 @pytest.fixture(autouse=True)
-def _forget_the_throttle():
-    """The throttle memory and the mint breaker are each one object for the whole process, which
-    is the point in production and a trap in tests: one test observing a withheld page would make
-    the next one skip its direct GET, and one leaving failures on the breaker would make the next
-    refuse to mint. Both cleared before and after every test."""
+def _forget_the_breaker():
+    """The legacy GraphQL path (no lane) keeps one mint breaker and one session for the process;
+    a test leaving failures on it would make the next refuse to mint. Cleared before and after.
+    Lanes carry their own throttle and breaker, made fresh with every lane."""
     from facebook_ad_library import graphql
-    from facebook_ad_library.throttle import throttle
 
-    throttle.clear()
     graphql.reset_breaker()
+    graphql.reset_session()
     yield
-    throttle.clear()
     graphql.reset_breaker()
+    graphql.reset_session()

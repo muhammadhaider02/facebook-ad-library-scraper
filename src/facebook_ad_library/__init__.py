@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 
 def _print(payload, pretty: bool) -> None:
@@ -27,31 +27,57 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_search(args: argparse.Namespace) -> int:
-    from .mapping import to_item
-    from .scraper import FacebookError, search
-    from .session import counters, pool
+def _lane(n: int):
+    """Lane `n` (0-based) built from the environment, exactly as the service would, with no
+    worker threads: the CLI drives one try at a time. Nothing reaches Facebook outside a lane."""
+    from .lanes import build_dispatcher
 
+    d = build_dispatcher()
+    if n < 0 or n >= len(d.lanes):
+        raise SystemExit(f"--lane {n}: LANE_COUNT is {len(d.lanes)}")
+    lane = d.lanes[n]
+    lane.check_ip("cli")
+    print(f"{lane.tag()} proxy={'yes' if lane.proxy_url else 'NO (direct; LANE_REQUIRE_PROXY is off)'}", file=sys.stderr)
+    return lane
+
+
+def _cmd_search(args: argparse.Namespace) -> int:
+    import time
+
+    from .config import settings
+    from .lanes import Item, run_search_try
+    from .mapping import to_item
+    from .session import counters
+
+    lane = _lane(args.lane)
     runs = []
     failed = 0
     for _ in range(max(1, args.repeat)):
         for query in args.query:
-            try:
-                result = search(query, args.country, args.max, pool=pool)
-            except FacebookError as e:
+            item = Item("search", f"{query}|{args.country}", 1, time.time() + settings.scrape_budget_s, query=query, country=args.country.upper())
+            t = run_search_try(lane, item)
+            lane.record(t)
+            if t.status not in ("ok", "no_ads"):
                 failed += 1
-                runs.append({"query": query, "country": args.country, "error": {"type": type(e).__name__, "status": e.status, "message": str(e)}})
-                print(f"{query!r} {args.country}: {type(e).__name__}: {e}", file=sys.stderr)
+                runs.append({"query": query, "country": args.country, "status": t.status, "error": {"type": t.error_type, "message": t.error}, "seconds": t.seconds})
+                print(f"{query!r} {args.country}: {t.status} {t.error_type}: {t.error}", file=sys.stderr)
                 continue
-            items = [to_item(a, result.query, result.country) for a in result.ads]
+            items = [to_item(a, query, args.country.upper()) for a in t.ads][: args.max]
+            r = t.result
             runs.append(
                 {
-                    "query": result.query,
-                    "country": result.country,
-                    "seconds": result.seconds,
-                    "attempts": result.attempts,
-                    "misses": result.misses,
-                    "session_swaps": result.session_swaps,
+                    "query": query,
+                    "country": args.country.upper(),
+                    "status": t.status,
+                    "lane": lane.name,
+                    "exit_ip": lane.exit_ip,
+                    "seconds": t.seconds,
+                    "attempts": r.attempts if r else 0,
+                    "misses": r.misses if r else 0,
+                    "session_swaps": r.session_swaps if r else 0,
+                    "reported_total": t.count,
+                    "recovered_over_graphql": t.run is not None,
+                    "decoded_bytes": t.decoded_bytes,
                     "ads": len(items),
                     "unique_pages": len({i["page_id"] for i in items}),
                     "domains": sorted({(i["snapshot"]["caption"] or "") for i in items} - {""})[:20],
@@ -59,20 +85,22 @@ def _cmd_search(args: argparse.Namespace) -> int:
                 }
             )
             print(
-                f"{result.query!r} {result.country}: {len(items)} ads, {runs[-1]['unique_pages']} pages, "
-                f"{result.attempts} GET(s), {result.misses} miss(es) in {result.seconds}s",
+                f"{query!r} {args.country}: {t.status} {len(items)} ads, {runs[-1]['unique_pages']} pages, total={t.count}, "
+                f"{runs[-1]['attempts']} GET(s), {runs[-1]['misses']} miss(es), {t.decoded_bytes // 1024} KB in {t.seconds}s on {lane.tag()}",
                 file=sys.stderr,
             )
-    _print({"runs": runs, "failed": failed, "sessions": counters}, args.pretty)
+    _print({"runs": runs, "failed": failed, "lane": lane.snapshot(), "sessions": counters}, args.pretty)
     return 2 if failed and failed == len(runs) else 0
 
 
 def _cmd_brand(args: argparse.Namespace) -> int:
     """One brand lookup, the way POST /adyntel makes it, printed as the vendor envelope."""
+    import time
+
     from .adyntel_mapping import to_envelope
-    from .brand import lookup
-    from .scraper import FacebookError
-    from .session import counters, pool
+    from .config import settings
+    from .lanes import Item, run_count_try
+    from .session import counters
 
     kwargs = {}
     if args.page_id:
@@ -84,18 +112,22 @@ def _cmd_brand(args: argparse.Namespace) -> int:
     else:
         print("one of --page-id, --url or --domain is required", file=sys.stderr)
         return 2
-    try:
-        res = lookup(active_status=args.status, media_type=args.media, pool=pool, **kwargs)
-    except FacebookError as e:
-        print(f"{type(e).__name__}: {e}", file=sys.stderr)
-        _print({"error": {"type": type(e).__name__, "status": e.status, "message": str(e)}, "sessions": counters}, args.pretty)
+    lane = _lane(args.lane)
+    item = Item("count", "cli", 0, time.time() + settings.brand_budget_s, status=args.status, media=args.media, **kwargs)
+    t = run_count_try(lane, item)
+    lane.record(t)
+    if t.status not in ("ok", "not_found"):
+        print(f"{t.status} {t.error_type}: {t.error}", file=sys.stderr)
+        _print({"error": {"type": t.error_type or t.status, "status": 503, "message": t.error, "kind": t.status}, "lane": lane.snapshot(), "sessions": counters}, args.pretty)
         return 3
+    res = t.brand
     env = to_envelope(res, args.max)
     print(
         f"{res.resolver}={res.query}: {'found' if res.found else 'not found'}"
         f"{' page ' + str(res.page_id) + ' (' + str(res.page_name) + ')' if res.found else ' (' + res.note + ')'}"
         f"; count={res.count} ads={len(res.ads or [])} status={res.active_status} media={res.media_type}"
-        f"; {res.attempts} page GET(s), {res.misses} miss(es), {res.plain_gets} plain GET(s), {res.session_swaps} swap(s), queue {res.queue_s}s, {res.seconds}s",
+        f"; {res.attempts} page GET(s), {res.misses} miss(es), {res.plain_gets} plain GET(s), {res.session_swaps} swap(s), "
+        f"{t.decoded_bytes // 1024} KB, {res.seconds}s on {lane.tag()}",
         file=sys.stderr,
     )
     if res.found and args.summary:
@@ -113,22 +145,29 @@ def _cmd_brand(args: argparse.Namespace) -> int:
 
 
 def _cmd_diag(args: argparse.Namespace) -> int:
-    """One session, step by step: the challenge, the cookies, and what shape each page came in."""
+    """One session on one lane, step by step: the exit IP, the challenge, the cookies, and what
+    shape each page came in."""
     from pathlib import Path
 
     from . import scraper as wire
     from .config import settings
-    from .session import FbSession, RateLimiter, default_transport
+    from .session import FbSession
 
     out = Path(args.save_dir) if args.save_dir else None
     if out:
         out.mkdir(parents=True, exist_ok=True)
 
-    session = FbSession(default_transport(), RateLimiter(settings.rate_limit_per_min))
-    print(f"impersonate={settings.impersonate} proxy={'yes' if settings.proxy else 'no'} retries={settings.ssr_retries}")
+    lane = _lane(args.lane)
+    if args.lane_ip:
+        # The deploy check for a fresh exit: the same lane asked for its address `repeat` times.
+        ips = [lane.check_ip("diag") for _ in range(max(1, args.repeat))]
+        print(f"{lane.name} port={lane.port} exit ip over {len(ips)} check(s): {ips}")
+        return 0 if ips and all(ips) and len(set(ips)) == 1 else 5
+
+    session = FbSession(lane._make_transport(), lane.limiter)
+    print(f"impersonate={settings.impersonate} {lane.tag()} retries={settings.ssr_retries}")
 
     if args.slug:
-        # The vanity resolvers, one GET each, saved raw: the deploy check for the plugin from a new address.
         for what, url, reader in (
             ("plugin", wire.plugin_url(args.slug), wire.page_id_from_plugin),
             ("profile", f"{wire.ORIGIN}/{args.slug}", wire.page_id_from_profile),
@@ -187,7 +226,7 @@ def _cmd_diag(args: argparse.Namespace) -> int:
             p = out / f"page{n}_{page.value}.html"
             p.write_text(session.last_text, encoding="utf-8")
             print(f"  saved {p} ({len(session.last_text)} bytes)")
-    print(f"session: {session.requests_made} GET(s), {session.challenges} challenge(s), retired={session.retired}")
+    print(f"session: {session.requests_made} GET(s), {session.challenges} challenge(s), retired={session.retired}; lane decoded {lane.decoded_bytes // 1024} KB")
     if shapes and all(s == "miss" for s in shapes):
         print("every page came without results; retry, or raise SSR_RETRIES if this persists")
         return 5
@@ -204,33 +243,37 @@ def main(argv: list[str] | None = None) -> None:
     serve.add_argument("--port", type=int)
     serve.set_defaults(func=_cmd_serve)
 
-    search_p = sub.add_parser("search", help="search one or more keywords from the command line and print JSON")
+    search_p = sub.add_parser("search", help="search one or more keywords on one lane and print JSON")
     search_p.add_argument("query", nargs="+")
     search_p.add_argument("--country", default="US")
     search_p.add_argument("--max", type=int, default=80)
+    search_p.add_argument("--lane", type=int, default=0, help="which configured lane to use (0-based)")
     search_p.add_argument("--repeat", type=int, default=1, help="run the whole keyword list this many times")
     search_p.add_argument("--summary", action="store_true", help="omit the items, keep the counts")
     search_p.add_argument("--pretty", action="store_true")
     search_p.set_defaults(func=_cmd_search)
 
-    brand_p = sub.add_parser("brand", help="look one brand up the way POST /adyntel does and print the vendor envelope")
+    brand_p = sub.add_parser("brand", help="look one brand up the way POST /adyntel does, on one lane, and print the vendor envelope")
     brand_p.add_argument("--page-id", help="the advertiser's numeric page id")
     brand_p.add_argument("--url", help="a Facebook page URL (vanity or with the id in it)")
     brand_p.add_argument("--domain", help="the brand's website domain")
     brand_p.add_argument("--status", default="active", help="active | inactive | all (video is always active)")
     brand_p.add_argument("--media", default="all", help="all | video")
     brand_p.add_argument("--max", type=int, default=10, help="results to print, up to the page's 30")
+    brand_p.add_argument("--lane", type=int, default=0, help="which configured lane to use (0-based)")
     brand_p.add_argument("--summary", action="store_true", help="one line per ad instead of the full results")
     brand_p.add_argument("--pretty", action="store_true")
     brand_p.set_defaults(func=_cmd_brand)
 
-    diag = sub.add_parser("diag", help="fetch the search page on one session verbosely; the deploy check")
+    diag = sub.add_parser("diag", help="fetch the search page on one lane's session verbosely; the deploy check")
     diag.add_argument("--query", default="running shoes")
     diag.add_argument("--country", default="US")
     diag.add_argument("--page-id", help="fetch this advertiser's page view instead of a keyword search")
     diag.add_argument("--status", default="active")
     diag.add_argument("--media", default="all")
     diag.add_argument("--slug", help="fetch the page plugin and the profile page for this vanity handle and read the page id")
+    diag.add_argument("--lane", type=int, default=0, help="which configured lane to use (0-based)")
+    diag.add_argument("--lane-ip", action="store_true", help="only learn the lane's exit ip `--repeat` times and check it is stable")
     diag.add_argument("--repeat", type=int, default=1, help="fetch the same page this many times on the one session")
     diag.add_argument("--save-dir", help="write each raw page here (gitignored diag-out/)")
     diag.set_defaults(func=_cmd_diag)

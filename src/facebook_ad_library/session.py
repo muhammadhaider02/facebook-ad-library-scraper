@@ -110,12 +110,19 @@ class CurlTransport:
         return sorted({c.name for c in self._s.cookies.jar})
 
 
+def lane_transport(proxy: str | None) -> Transport:
+    """A transport on one lane's exit. `None` is the direct address, allowed only when
+    LANE_REQUIRE_PROXY is off (CI); production refuses it at startup (proxy.lane_proxies)."""
+    return CurlTransport(proxy=proxy)
+
+
 def default_transport() -> Transport:
+    """The legacy direct transport (SCRAPER_PROXY or none). CLI probes and tests only."""
     return CurlTransport(proxy=proxy_url())
 
 
 def fallback_transport() -> Transport:
-    """A transport on the RECOVERY proxy, for the pages Meta serves this address without their
+    """A transport on the retired RECOVERY proxy, for the pages Meta serves this address without their
     ads. Same rendered page, same parser - only the address it is fetched from differs."""
     return CurlTransport(proxy=fallback_proxy_url())
 
@@ -426,10 +433,8 @@ class _SessionPool:
             self.live = 0
 
 
-_limiter = RateLimiter(settings.rate_limit_per_min)
-pool = _SessionPool(settings.session_pool_size, settings.max_concurrency, limiter=_limiter)
-# Recovery sessions: the same Ad Library page fetched through the fallback proxy, for when Meta
-# serves this address a correct total with no ads. One session and one at a time, deliberately -
-# every GET here is billed by the proxy, unlike the ordinary path. It shares the limiter, because
-# the 20-a-minute ceiling is about how this host looks to Meta, not about which exit it used.
-recovery_pool = _SessionPool(1, 1, factory=fallback_transport, limiter=_limiter)
+# Until 0.4.0 this module ended with the process-wide `pool` (3 sessions on the host's own
+# address), a one-session `recovery_pool` on FALLBACK_PROXY, and ONE limiter shared by both,
+# "because the 20-a-minute ceiling is about how this host looks to Meta". Lanes (lanes.py)
+# changed what Meta looks at: each lane is one exit IP with its own pool of one session, its own
+# limiter and its own GraphQL session, and nothing leaves on the host's address at all.
