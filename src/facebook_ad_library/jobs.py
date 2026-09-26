@@ -184,7 +184,8 @@ class JobStore:
 
 
 def result_payload(job: Job, item_id: str, include_items: str) -> dict:
-    """`include_items`: "0" (no ad arrays or envelopes), "1" (everything), "lite" (service.lite_item per ad)."""
+    """`include_items`: "0" (no ad arrays or envelopes), "1" (everything), "lite" (service.lite_item per ad),
+    "brands" (no ads at all: service.brand_lines per search, one line per advertiser page and domain)."""
     s = job.specs[item_id]
     o = job.results.get(item_id)
     if o is None:
@@ -204,7 +205,8 @@ def result_payload(job: Job, item_id: str, include_items: str) -> dict:
         return {
             **common, "query": s["query"], "country": s["country"], "ads_found": len(items),
             "reported_total": o.count, "direct_skipped": o.direct_skipped,
-            "items": ([service.lite_item(i) for i in items] if include_items == "lite" else items) if include_items != "0" else None,
+            "items": ([service.lite_item(i) for i in items] if include_items == "lite" else items) if include_items in ("1", "lite") else None,
+            "brands": service.brand_lines(items) if include_items == "brands" else None,
         }
     res = o.brand
     return {

@@ -548,7 +548,7 @@ async def poll_job(job_id: str, wait_s: float = 0, include_items: str = "1", par
         await asyncio.sleep(0.25)
     snap = dispatcher.snapshot()["lanes_summary"]
     mode = str(include_items or "1").strip().lower()
-    mode = "lite" if mode in ("lite", "2") else ("0" if mode in ("0", "false", "no") else "1")
+    mode = "lite" if mode in ("lite", "2") else ("brands" if mode in ("brands", "3") else ("0" if mode in ("0", "false", "no") else "1"))
     return JSONResponse(content=job_payload(job, mode, bool(partial), snap))
 
 

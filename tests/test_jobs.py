@@ -247,3 +247,19 @@ def test_include_items_lite_keeps_only_the_sourcing_fields(client, monkeypatch):
     full = poll(client, r.json()["job_id"], include_items=1).json()["results"][0]["items"][0]
     assert len(json.dumps(item)) < len(json.dumps(full))
     assert poll(client, r.json()["job_id"], include_items=0).json()["results"][0]["items"] is None
+
+
+def test_include_items_brands_groups_the_ads_by_page_and_domain(client, monkeypatch):
+    fake_search(monkeypatch)
+    r = submit(client, [{"id": "a", "query": "grounding sheets", "country": "US"}])
+    full = poll(client, r.json()["job_id"], include_items=1).json()["results"][0]
+    p = poll(client, r.json()["job_id"], include_items="brands").json()["results"][0]
+    assert p["items"] is None and isinstance(p["brands"], list) and p["brands"]
+    assert p["ads_found"] == full["ads_found"]
+    real = [b for b in p["brands"] if not b.get("skipped")]
+    assert sum(b["ad_count"] for b in p["brands"]) == full["ads_found"]
+    assert len({(b["page_id"], b["domain"]) for b in real}) == len(real)
+    shakti = next(b for b in real if b["page_name"] == "Shakti Mat")
+    assert shakti["page_id"] and "." in shakti["domain"] and 1 <= len(shakti["ad_texts"]) <= 3
+    assert len(json.dumps(p["brands"])) < len(json.dumps(full["items"]))
+    assert poll(client, r.json()["job_id"], include_items=0).json()["results"][0].get("brands") is None

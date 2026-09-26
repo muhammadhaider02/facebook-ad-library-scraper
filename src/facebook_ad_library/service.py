@@ -65,6 +65,91 @@ def lite_item(item: dict) -> dict:
     return lite
 
 
+def _pick(*values) -> str:
+    for v in values:
+        if v is not None and str(v).strip() != "":
+            return str(v).strip()
+    return ""
+
+
+def _ad_domain(snap: dict) -> str:
+    """The landing domain of one ad, the way workflow 00's Extract Brands reads it: the `caption`
+    when it is a bare host, else the `link_url`; "" when neither carries one."""
+    caption = str(snap.get("caption") or "").strip()
+    if caption and " " not in caption and "." in caption:
+        d = registrable_domain(caption)
+        if "." in d:
+            return d
+    link = str(snap.get("link_url") or "").strip()
+    if link:
+        d = registrable_domain(link)
+        if "." in d:
+            return d
+    return ""
+
+
+def _ad_text(snap: dict) -> str:
+    body = snap.get("body")
+    text = body.get("text") if isinstance(body, dict) else body
+    parts = [" ".join(str(x or "").split()) for x in (snap.get("title"), text, snap.get("link_description"))]
+    return " | ".join(p for p in parts if p)[:240]
+
+
+def brand_lines(items: list[dict], texts_per_brand: int = 3) -> list[dict]:
+    """The ads of one search grouped by advertiser page and landing domain: one line per group
+    with the page identity, the ad count and up to `texts_per_brand` distinct ad texts. This is
+    the grouping workflow 00's Extract Brands did over every ad; done here, a 900-ad search
+    becomes a few dozen lines and n8n never holds the ads (26 Sep 2026). A `no_domain`
+    group (domain "") keeps the count of ads that carried no landing domain."""
+    groups: dict[tuple[str, str], dict] = {}
+    order: list[tuple[str, str]] = []
+    skipped = 0
+    for ad in items:
+        if not isinstance(ad, dict) or ad.get("error") or (not ad.get("snapshot") and not ad.get("page_name")):
+            skipped += 1
+            continue
+        snap = ad.get("snapshot") or {}
+        page_id = _pick(snap.get("page_id"), ad.get("page_id"))
+        domain = _ad_domain(snap)
+        key = (page_id, domain)
+        g = groups.get(key)
+        if g is None:
+            cats = snap.get("page_categories")
+            g = groups[key] = {
+                "page_id": page_id,
+                "page_name": _pick(ad.get("page_name"), snap.get("page_name")),
+                "page_url": _pick(ad.get("page_url")),
+                "page_profile_uri": _pick(snap.get("page_profile_uri"), ad.get("page_profile_uri")),
+                "page_alias": _pick(snap.get("page_alias"), ad.get("page_alias")),
+                "page_category": _pick(snap.get("page_category"), ad.get("page_category"), cats[0] if isinstance(cats, list) and cats else ""),
+                "page_like_count": None, "domain": domain, "ad_count": 0, "ad_texts": [],
+            }
+            order.append(key)
+        g["ad_count"] += 1
+        for v in (ad.get("page_like_count"), snap.get("page_like_count")):
+            try:
+                n = int(v)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            if g["page_like_count"] is None or n > g["page_like_count"]:
+                g["page_like_count"] = n
+        if len(g["ad_texts"]) < texts_per_brand:
+            t = _ad_text(snap)
+            if t and t not in g["ad_texts"]:
+                g["ad_texts"].append(t)
+        for k, v in (("page_profile_uri", _pick(snap.get("page_profile_uri"), ad.get("page_profile_uri"))),
+                     ("page_alias", _pick(snap.get("page_alias"), ad.get("page_alias"))),
+                     ("page_category", _pick(snap.get("page_category"), ad.get("page_category"))),
+                     ("page_url", _pick(ad.get("page_url")))):
+            if not g[k] and v:
+                g[k] = v
+    lines = [groups[k] for k in order]
+    if skipped:
+        lines.append({"page_id": "", "page_name": "", "page_url": "", "page_profile_uri": "", "page_alias": "", "page_category": "",
+                      "page_like_count": None, "domain": "", "ad_count": skipped, "ad_texts": [], "skipped": True})
+    return lines
+
+
 def remember_search(outcome: Outcome, query: str, country: str, status: str) -> list[dict]:
     """Map and, for an answer Facebook actually gave, cache. A blocked or errored search is never
     cached: the next caller must re-ask rather than re-read a throttled answer."""
