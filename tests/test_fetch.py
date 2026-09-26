@@ -15,7 +15,7 @@ def client():
 def test_a_fetch_rides_a_lane_exit_and_answers_with_the_text(client, monkeypatch):
     seen = []
 
-    def _fetch(url, proxy, timeout_s, max_bytes):
+    def _fetch(url, proxy, timeout_s, max_bytes, **kw):
         seen.append((url, proxy, timeout_s, max_bytes))
         return {"url": url, "ok": True, "status": 200, "final_url": url + "/", "bytes": 12, "text": "<html>hi</html>", "error": None, "seconds": 0.3}
 
@@ -30,7 +30,7 @@ def test_a_fetch_rides_a_lane_exit_and_answers_with_the_text(client, monkeypatch
 
 
 def test_a_failed_fetch_is_an_answer_not_an_error(client, monkeypatch):
-    monkeypatch.setattr(api, "fetch_page", lambda url, proxy, t, m: {"url": url, "ok": False, "status": 403, "final_url": url, "bytes": 0, "text": "", "error": "http 403", "seconds": 0.2})
+    monkeypatch.setattr(api, "fetch_page", lambda url, proxy, t, m, **kw: {"url": url, "ok": False, "status": 403, "final_url": url, "bytes": 0, "text": "", "error": "http 403", "seconds": 0.2})
     r = client.post("/fetch", json={"url": "https://walled.example", "timeout_s": 5, "max_bytes": 1000})
     assert r.status_code == 200 and r.json()["ok"] is False and r.json()["error"] == "http 403" and r.headers["X-Status"] == "failed"
     assert api.counters["fetch_failed"] == 1

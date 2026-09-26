@@ -88,11 +88,20 @@ def _ad_domain(snap: dict) -> str:
     return ""
 
 
-def _ad_text(snap: dict) -> str:
+AD_TEXT_MAX = 400
+AD_TEXT_CANDIDATES = 10
+
+
+def _ad_text(snap: dict) -> tuple[str, str]:
+    """The ad's copy as `title | body | link description` (AD_TEXT_MAX chars) and its normalised body,
+    the dedupe key: one body under several headlines is one text. A catalog ad's `{{product.name}}`
+    placeholder part carries nothing, so it is dropped (18 % of 00's texts on 26 Sep 2026)."""
     body = snap.get("body")
     text = body.get("text") if isinstance(body, dict) else body
     parts = [" ".join(str(x or "").split()) for x in (snap.get("title"), text, snap.get("link_description"))]
-    return " | ".join(p for p in parts if p)[:240]
+    parts = [p for p in parts if p and "{{" not in p]
+    key = " ".join(str(text or "").lower().split()) if text and "{{" not in str(text) else " | ".join(parts).lower()
+    return " | ".join(parts)[:AD_TEXT_MAX], key
 
 
 def brand_lines(items: list[dict], texts_per_brand: int = 3) -> list[dict]:
@@ -122,7 +131,7 @@ def brand_lines(items: list[dict], texts_per_brand: int = 3) -> list[dict]:
                 "page_profile_uri": _pick(snap.get("page_profile_uri"), ad.get("page_profile_uri")),
                 "page_alias": _pick(snap.get("page_alias"), ad.get("page_alias")),
                 "page_category": _pick(snap.get("page_category"), ad.get("page_category"), cats[0] if isinstance(cats, list) and cats else ""),
-                "page_like_count": None, "domain": domain, "ad_count": 0, "ad_texts": [],
+                "page_like_count": None, "domain": domain, "ad_count": 0, "ad_texts": [], "_texts": {},
             }
             order.append(key)
         g["ad_count"] += 1
@@ -133,10 +142,10 @@ def brand_lines(items: list[dict], texts_per_brand: int = 3) -> list[dict]:
                 continue
             if g["page_like_count"] is None or n > g["page_like_count"]:
                 g["page_like_count"] = n
-        if len(g["ad_texts"]) < texts_per_brand:
-            t = _ad_text(snap)
-            if t and t not in g["ad_texts"]:
-                g["ad_texts"].append(t)
+        if len(g["_texts"]) < AD_TEXT_CANDIDATES:
+            t, k = _ad_text(snap)
+            if t and k not in g["_texts"]:
+                g["_texts"][k] = t
         for k, v in (("page_profile_uri", _pick(snap.get("page_profile_uri"), ad.get("page_profile_uri"))),
                      ("page_alias", _pick(snap.get("page_alias"), ad.get("page_alias"))),
                      ("page_category", _pick(snap.get("page_category"), ad.get("page_category"))),
@@ -144,6 +153,10 @@ def brand_lines(items: list[dict], texts_per_brand: int = 3) -> list[dict]:
             if not g[k] and v:
                 g[k] = v
     lines = [groups[k] for k in order]
+    for g in lines:
+        # The longest texts say the most about what the brand sells; first-seen order breaks ties.
+        texts = list(g.pop("_texts").values())
+        g["ad_texts"] = sorted(texts, key=lambda t: -len(t))[:texts_per_brand]
     if skipped:
         lines.append({"page_id": "", "page_name": "", "page_url": "", "page_profile_uri": "", "page_alias": "", "page_category": "",
                       "page_like_count": None, "domain": "", "ad_count": skipped, "ad_texts": [], "skipped": True})

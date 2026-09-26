@@ -29,9 +29,11 @@ Error contract, matched to the siblings:
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -42,7 +44,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from . import __version__, service
 from .brand import BrandResult
 from .config import settings
-from .fetch import fetch_page, normalise_url
+from .fetch import fetch_page, validate_public_url
 from .jobs import JobStore, job_payload
 from .lanes import Dispatcher, Item, Outcome, build_dispatcher
 from .scraper import Busy, FacebookError
@@ -100,7 +102,7 @@ async def lifespan(_: FastAPI):
     # Fail at startup, not on the first call, if the lanes cannot be built from the environment.
     dispatcher = build_dispatcher()
     dispatcher.start()
-    jobs = JobStore(dispatcher)
+    jobs = JobStore(dispatcher, fetcher=lambda url, timeout_s, exclude: _read_homepage(url, timeout_s, exclude), executor=fetch_pool)
     log.info(
         "lanes: %d up on ports %s (%d in reserve); this host's own address is never used",
         len(dispatcher.lanes), [l.port for l in dispatcher.lanes],
@@ -220,6 +222,8 @@ class JobItemRequest(BaseModel):
     max_pages: int = Field(default=1, validation_alias=AliasChoices("max_pages", "maxPages"))
     novelty_stop: int = Field(default=25, validation_alias=AliasChoices("novelty_stop", "noveltyStop"))
     empty_tol: int = Field(default=8, validation_alias=AliasChoices("empty_tol", "emptyTol"))
+    # A fetch item: the homepage to read (a bare domain is fine; https:// is assumed).
+    url: str | None = Field(default=None, validation_alias=AliasChoices("url", "homepage"))
 
     @field_validator("country", mode="before")
     @classmethod
@@ -239,6 +243,8 @@ class JobRequest(BaseModel):
 
     items: list[JobItemRequest]
     max_tries: int = Field(default=0, validation_alias=AliasChoices("max_tries", "maxTries"))
+    # Fetch jobs only: after this many seconds every unfinished item answers `timeout`.
+    deadline_s: float | None = Field(default=None, validation_alias=AliasChoices("deadline_s", "deadlineS"))
 
 
 # --------------------------------------------------------------------------- plumbing
@@ -490,8 +496,13 @@ async def adyntel(req: BrandRequest):
 def _job_specs(req: JobRequest) -> list[dict]:
     if not req.items:
         raise ValueError("invalid request: `items` is empty")
-    if len(req.items) > settings.job_max_items:
-        raise ValueError(f"invalid request: {len(req.items)} items, the cap is {settings.job_max_items}")
+    kinds = {(it.kind or "search").strip().lower() for it in req.items}
+    fetch_job = "fetch" in kinds
+    if fetch_job and kinds != {"fetch"}:
+        raise ValueError("invalid request: a job of `fetch` items cannot also hold searches or counts")
+    cap = settings.fetch_job_max_items if fetch_job else settings.job_max_items
+    if len(req.items) > cap:
+        raise ValueError(f"invalid request: {len(req.items)} items, the cap is {cap}")
     specs: list[dict] = []
     seen: set[str] = set()
     for it in req.items:
@@ -501,7 +512,14 @@ def _job_specs(req: JobRequest) -> list[dict]:
             raise ValueError(f"invalid request: item id {it.id!r} appears twice")
         seen.add(it.id)
         kind = (it.kind or "search").strip().lower()
-        if kind == "search":
+        if kind == "fetch":
+            # One bad url fails its own item, not the whole job.
+            raw = it.url or it.company_domain or ""
+            try:
+                specs.append({"id": it.id, "kind": "fetch", "url": validate_public_url(raw), "invalid": None})
+            except ValueError as e:
+                specs.append({"id": it.id, "kind": "fetch", "url": str(raw), "invalid": str(e).replace("invalid request: ", "invalid url: ")})
+        elif kind == "search":
             query, country, status = service.search_params(it.query, it.country, it.active_status)
             pages = int(it.max_pages or 1)
             if pages < 1 or pages > settings.page_max_pages:
@@ -512,7 +530,7 @@ def _job_specs(req: JobRequest) -> list[dict]:
             resolver, value, status, media = service.count_params(it.page_id, it.facebook_url, it.company_domain, it.active_status, it.media_type)
             specs.append({"id": it.id, "kind": "count", "resolver": resolver, "value": value, "status": status, "media": media, "max_results": max(1, min(int(it.max_results or 10), 30))})
         else:
-            raise ValueError(f"invalid request: item {it.id!r} has kind {it.kind!r}; use `search` or `count`")
+            raise ValueError(f"invalid request: item {it.id!r} has kind {it.kind!r}; use `search`, `count` or `fetch`")
     return specs
 
 
@@ -525,7 +543,7 @@ async def submit_job(req: JobRequest):
         counters["bad_request"] += 1
         return JSONResponse(status_code=400, content=_error_body(e, 400))
     try:
-        job = jobs.submit(specs, max(0, int(req.max_tries or 0)))
+        job = jobs.submit(specs, max(0, int(req.max_tries or 0)), req.deadline_s)
     except Busy as e:
         return _failure(e)
     counters["jobs_submitted"] += 1
@@ -546,6 +564,7 @@ async def poll_job(job_id: str, wait_s: float = 0, include_items: str = "1", par
     deadline = time.time() + max(0.0, min(float(wait_s or 0), settings.job_poll_max_wait_s))
     while job.status not in ("done", "cancelled") and time.time() < deadline:
         await asyncio.sleep(0.25)
+        jobs.expire(job)
     snap = dispatcher.snapshot()["lanes_summary"]
     mode = str(include_items or "1").strip().lower()
     mode = "lite" if mode in ("lite", "2") else ("brands" if mode in ("brands", "3") else ("0" if mode in ("0", "false", "no") else "1"))
@@ -572,44 +591,52 @@ class FetchRequest(BaseModel):
     timeout_s: float | None = Field(default=None, validation_alias=AliasChoices("timeout_s", "timeoutS"))
 
 
-_fetch_gate: asyncio.Semaphore | None = None
-_fetch_turn = 0
+# One pool for every homepage read, POST /fetch and fetch jobs alike: FETCH_CONCURRENCY threads.
+fetch_pool = ThreadPoolExecutor(max_workers=max(1, settings.fetch_concurrency), thread_name_prefix="fetch")
+_fetch_turn = itertools.count()
 
 
-def _fetch_proxy() -> tuple[str | None, str | None]:
-    """The next lane's exit, round robin. Fetches ride the exits, not the lanes: no accounting."""
-    global _fetch_turn
+def _fetch_proxy(exclude: str | None = None) -> tuple[str | None, str | None]:
+    """The next lane's exit, round robin (thread-safe), skipping `exclude` when another lane exists.
+    Fetches ride the exits, not the lanes: no accounting."""
     if dispatcher is None or not dispatcher.lanes:
         return None, None
-    lane = dispatcher.lanes[_fetch_turn % len(dispatcher.lanes)]
-    _fetch_turn += 1
-    return lane.proxy_url, lane.name
+    lanes_ = dispatcher.lanes
+    for _ in range(len(lanes_)):
+        lane = lanes_[next(_fetch_turn) % len(lanes_)]
+        if lane.name != exclude or len(lanes_) == 1:
+            return lane.proxy_url, lane.name
+    return lanes_[0].proxy_url, lanes_[0].name
+
+
+def _read_homepage(url: str, timeout_s: float, exclude: str | None = None, max_bytes: int | None = None, keep_text: bool = False) -> dict:
+    """One homepage read on a lane exit, logged and counted; the fetcher of fetch jobs."""
+    proxy, lane_name = _fetch_proxy(exclude)
+    out = fetch_page(url, proxy, min(timeout_s, 60), min(max_bytes or settings.fetch_max_bytes, 2_000_000), summarise=True)
+    if not keep_text:
+        out.pop("text", None)
+    out["lane"] = lane_name
+    out["proxied"] = bool(proxy)
+    counters.bump("fetch_ok" if out["ok"] else "fetch_failed")
+    log.info("fetch %s via %s -> %s %s %s in %ss", url, lane_name or "direct", "ok" if out["ok"] else "failed", out.get("status"), out.get("error") or "", out["seconds"])
+    return out
 
 
 @app.post("/fetch", dependencies=[Depends(require_token)])
 async def fetch(req: FetchRequest):
     """A homepage through a lane exit with the Chrome profile. Always 200 with an answer: `ok`,
-    `status`, `final_url`, `text` (at most `max_bytes`), `error`, so a caller pairing pages to
-    brands by position never loses a slot. 400 only for a malformed `url`."""
-    global _fetch_gate
+    `status`, `final_url`, `text` (at most `max_bytes`), `summary` (fetch.page_summary), `error`, so a
+    caller pairing pages to brands by position never loses a slot. 400 for a malformed or
+    non-public `url`."""
     counters["fetch_requests"] += 1
     try:
-        url = normalise_url(req.url)
+        url = validate_public_url(req.url)
     except ValueError as e:
         counters["bad_request"] += 1
         return JSONResponse(status_code=400, content=_error_body(e, 400))
-    if _fetch_gate is None:
-        _fetch_gate = asyncio.Semaphore(max(1, settings.fetch_concurrency))
-    proxy, lane_name = _fetch_proxy()
     timeout = req.timeout_s if req.timeout_s and req.timeout_s > 0 else settings.fetch_timeout_s
-    max_bytes = req.max_bytes if req.max_bytes and req.max_bytes > 0 else settings.fetch_max_bytes
-    async with _fetch_gate:
-        out = await asyncio.to_thread(fetch_page, url, proxy, min(timeout, 60), min(max_bytes, 2_000_000))
-    out["lane"] = lane_name
-    out["proxied"] = bool(proxy)
-    counters["fetch_ok" if out["ok"] else "fetch_failed"] += 1
-    log.info("fetch %s via %s -> %s %s %s in %ss", url, lane_name or "direct", "ok" if out["ok"] else "failed", out.get("status"), out.get("error") or "", out["seconds"])
-    return JSONResponse(content=out, headers={"X-Status": "ok" if out["ok"] else "failed", "X-Lane": lane_name or "-"})
+    out = await asyncio.get_running_loop().run_in_executor(fetch_pool, lambda: _read_homepage(url, timeout, None, req.max_bytes, keep_text=True))
+    return JSONResponse(content=out, headers={"X-Status": "ok" if out["ok"] else "failed", "X-Lane": out["lane"] or "-"})
 
 
 @app.get("/health")

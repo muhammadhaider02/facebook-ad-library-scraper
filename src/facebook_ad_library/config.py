@@ -129,9 +129,15 @@ class Settings:
     # POST /fetch: homepage reads through a lane exit with the Chrome profile (fetch.py). Fetches
     # run beside the lanes, not on them, so this is their own ceiling; 15 s is generous for a
     # storefront and short enough that a dead host does not hold a batch.
-    fetch_concurrency: int = _env_int("FETCH_CONCURRENCY", 4)
+    # One thread pool serves POST /fetch and the fetch items of jobs (8 threads, well inside the
+    # container's pids limit).
+    fetch_concurrency: int = _env_int("FETCH_CONCURRENCY", 8)
     fetch_timeout_s: float = _env_float("FETCH_TIMEOUT_S", 15)
     fetch_max_bytes: int = _env_int("FETCH_MAX_BYTES", 300_000)
+    # A job of homepage fetches (00's DTC check, 26 Sep 2026): at most this many items, and after
+    # `deadline_s` (the job's, else this) every unfinished item answers `timeout` and the job ends.
+    fetch_job_max_items: int = _env_int("FETCH_JOB_MAX_ITEMS", 600)
+    fetch_job_deadline_s: float = _env_float("FETCH_JOB_DEADLINE_S", 150)
     # Pages the proxied fallback may take when this address is being throttled. Small on purpose:
     # the fallback exists to answer the search Stage 0 asked for, not to page deeply. 8 pages is
     # ~80 ads, above Stage 0's 80-item ask, for roughly 20 KB of billed wire.
