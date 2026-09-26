@@ -1,4 +1,4 @@
-"""Self-hosted Meta Ad Library scraper, a drop-in for the Apify actor used by the Stage 0 workflow."""
+"""Self-hosted Meta Ad Library scraper, a drop-in for the Apify actor used by a brand-sourcing workflow."""
 
 import argparse
 import json

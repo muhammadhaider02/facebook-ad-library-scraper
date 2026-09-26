@@ -11,15 +11,15 @@ actually sends. Tokens are scrubbed; nothing here identifies a session.
 | `ssr_miss.html` | the ~573 KB page shape that has no results blob at all | a minimal page with the `LSD` token blob and one unrelated `ScheduledServerJS` blob |
 | `html_200.html` | a `200` that is not the Ad Library page (no `LSD` token) | hand-written |
 
-Page views and the vanity resolvers, saved 2026-09-22 from the laptop (the raw pages are under `diag-out/adyntel-probe/`):
+Page views and the vanity resolvers, saved 2026-09-22 from a laptop. The raw pages were written by `diag --save-dir` to a local, gitignored `diag-out/` directory and are not in the repo; only the trimmed copies below are:
 
 | File | What it is | How it was made |
 |---|---|---|
-| `page_view_ads.html` | the `view_all_page_id` page of Muscle Mat (105396194411046): `count` 1783, 4 ads in 4 edges chosen to carry an IMAGE, a VIDEO and two DCO ads with card videos, captions in mixed case with paths and `.com.au` / `.co.nz` | the page's record blob (`page_name`, `page_is_deleted`) and its results blob were cut out, the edges picked, and both wrapped in the minimal page with the `LSD` blob |
+| `page_view_ads.html` | the `view_all_page_id` page of Example Mat (100000000000001): `count` 1783, 4 ads in 4 edges chosen to carry an IMAGE, a VIDEO and two DCO ads with card videos, captions in mixed case with paths and `.com.au` / `.co.nz` | the page's record blob (`page_name`, `page_is_deleted`) and its results blob were cut out, the edges picked, and both wrapped in the minimal page with the `LSD` blob |
 | `page_view_video.html` | Shakti Mat's page view with `media_type=video`: `count` 489, 14 ads in 2 edges, every `display_format` VIDEO | same cut, first two edges |
 | `page_view_zero.html` | a known page with no ads: the record kept, `count: 0`, `edges: []` | synthesised from `page_view_ads.html` |
 | `page_view_unknown.html` | the page view of a page id Meta does not know (1234): `count: 0`, `{"page_info": null}` in every copy | cut from the saved page |
-| `keyword_mixed_owners.html` | the keyword search for `gymshark.com`: 31 ads from six advertisers (Gymshark 22, Planet Fitness 4, two Instagram-caption pages, Gymshark Women, and one Salty Dagger ad with a `null` caption), stripped to the fields the resolver reads | the results blob's edges with each ad reduced to id, page, dates, caption, link URL, like count and card links; the null-caption ad appended from Salty Dagger's page view |
+| `keyword_mixed_owners.html` | the keyword search for `gymshark.com`: 31 ads from six advertisers (Gymshark 22, Example Gym 4, two Instagram-caption pages, Gymshark Women, and one Example Outfitters ad with a `null` caption), stripped to the fields the resolver reads | the results blob's edges with each ad reduced to id, page, dates, caption, link URL, like count and card links; the null-caption ad appended from Example Outfitters's page view |
 | `plugin_page.html` | the public page plugin for `facebook.com/shaktimats`: the link `facebook.com/775991435791863?ref=embed_page` | a 600-byte window around that link, with the `LSD` blob |
 | `plugin_unknown.html` | the plugin for a handle that does not exist (`shaktimat`): renders, carries the token blob, has no `?ref=embed_page` link | hand-written from the saved 19 KB page's shape |
 | `profile_page.html` | the profile page of `shaktimats`: `"delegate_page":{"id":"775991435791863"}` plus the `userID` / `al:android:url` decoy (100064593973677, the user id the Ad Library does not know) | a 600-byte window around `delegate_page`, the decoy and the `LSD` blob |
@@ -34,8 +34,8 @@ Regenerate the three `ssr_*.html` files from a fresh page with:
 uv run facebook-ad-library diag --query "acupressure mat for back pain" --country NZ --save-dir diag-out
 ```
 
-then cut the blob that contains `search_results_connection` out of `diag-out/page1_ads.html` and
-trim its `edges` as above. The tests pin the counts (3 edges, 5 ads, first caption
+then cut the blob that contains `search_results_connection` out of `diag-out/page1_ads.html` (the
+page that command just saved; `diag-out/` is local output and gitignored) and trim its `edges` as above. The tests pin the counts (3 edges, 5 ads, first caption
 `shaktimat.com`, page id `775991435791863`), so update them if the trim changes.
 - `page_view_withheld.html` - the throttle's signature: a page view whose total says 1039 ads
   and whose `edges` are empty. Meta serves this to an address it is withholding from, with no

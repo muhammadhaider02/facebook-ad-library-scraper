@@ -5,18 +5,18 @@ from conftest import fixture
 from facebook_ad_library.mapping import to_item
 from facebook_ad_library.scraper import classify_page
 
-# Every path Stage 0's `Extract Dedupe And Filter` reads (facebook.md §2.2), top level and under snapshot.
-STAGE0_TOP = {"page_name", "page_id", "page_profile_uri", "page_url", "page_alias", "page_category", "page_like_count", "page_likes", "snapshot", "_details"}
-STAGE0_SNAPSHOT = {"caption", "link_url", "page_like_count", "page_categories", "page_profile_uri", "page_alias", "page_name", "page_id"}
+# Every path the sourcing workflow's extraction node reads, top level and under snapshot.
+SOURCING_TOP = {"page_name", "page_id", "page_profile_uri", "page_url", "page_alias", "page_category", "page_like_count", "page_likes", "snapshot", "_details"}
+SOURCING_SNAPSHOT = {"caption", "link_url", "page_like_count", "page_categories", "page_profile_uri", "page_alias", "page_name", "page_id"}
 
 
 def ads():
     return classify_page(fixture("ssr_ads.html"))[1]
 
 
-def test_item_carries_every_field_stage0_reads():
+def test_item_carries_every_field_sourcing_reads():
     item = to_item(ads()[0], "acupressure mat for back pain", "NZ")
-    assert STAGE0_TOP <= set(item) and STAGE0_SNAPSHOT <= set(item["snapshot"])
+    assert SOURCING_TOP <= set(item) and SOURCING_SNAPSHOT <= set(item["snapshot"])
     assert item["snapshot"]["caption"] == "shaktimat.com" and "shaktimat.com" in item["snapshot"]["link_url"]
     assert item["page_name"] == "Shakti Mat" and item["page_id"] == "775991435791863" and isinstance(item["page_id"], str)
     assert item["page_like_count"] > 200000 and item["page_like_count"] == item["page_likes"] == item["snapshot"]["page_like_count"]
@@ -33,7 +33,7 @@ def test_missing_values_are_null_not_absent():
     assert item["page_name"] is None and item["page_id"] is None and item["page_category"] is None
     assert item["page_categories"] == [] and item["snapshot"]["caption"] is None and item["snapshot"]["cards"] == []
     assert item["ad_archive_id"] == "1" and item["publisher_platform"] == []
-    assert STAGE0_TOP <= set(item)
+    assert SOURCING_TOP <= set(item)
 
 
 def test_link_url_falls_back_to_the_first_card():

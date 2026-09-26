@@ -4,8 +4,8 @@ counts), the lanes spread it out, and the caller polls for the results paired ba
 Submit + poll rather than one long request, so n8n's 300 s node timeout never cuts a run in
 half: `POST /jobs` answers at once with the id, `GET /jobs/{id}?wait_s=45` long-polls. Results
 come back in submission order and every one echoes its `id`, `query` and `country` (or the page
-id), so the caller can assert `results.length == items.length` and join by id - the 20 Sep pairing
-defect in Stage 0's `Build DTC Prompt` is the reason that is spelled out.
+id), so the caller can assert `results.length == items.length` and join by id - a pairing defect in
+an earlier caller, which matched results by position, is the reason that is spelled out.
 
 Everything is in memory and bounded: JOB_STORE_MAX live jobs, JOB_TTL_S after a job finishes,
 oldest-finished evicted first. A restart loses running jobs; the caller sees a 404 and treats the

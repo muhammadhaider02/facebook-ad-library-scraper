@@ -14,11 +14,11 @@ from .mapping import to_item
 from .scraper import normalise_active_status, normalise_country, normalise_media_type, registrable_domain
 
 # One GET answers every size up to the page's 30, so the cache holds the whole mapped page and
-# `maxItems` is applied on the way out. Stage 0 re-searches an exhausted keyword's remaining
+# `maxItems` is applied on the way out. The sourcing workflow re-searches an exhausted keyword's remaining
 # country slots and retries on error; the cache makes those free.
 cache = TTLCache(settings.cache_ttl_s, settings.cache_empty_ttl_s, settings.cache_max_entries)
 # Brand lookups: the page view under (page id, status, media), and a domain's resolved page id.
-# Short-lived so a re-run measures the site, not the cache; long enough for 01 -> 02 hand-offs.
+# Short-lived so a re-run measures the site, not the cache; long enough for qualification -> research hand-offs.
 brand_cache = TTLCache(settings.adyntel_cache_ttl_s, settings.cache_empty_ttl_s, settings.cache_max_entries)
 
 BY_RESOLVER = {"page_id": "adyntel_by_page_id", "facebook_url": "adyntel_by_url", "company_domain": "adyntel_by_domain"}
@@ -73,7 +73,7 @@ def _pick(*values) -> str:
 
 
 def _ad_domain(snap: dict) -> str:
-    """The landing domain of one ad, the way workflow 00's Extract Brands reads it: the `caption`
+    """The landing domain of one ad, the way the sourcing workflow's brand extraction reads it: the `caption`
     when it is a bare host, else the `link_url`; "" when neither carries one."""
     caption = str(snap.get("caption") or "").strip()
     if caption and " " not in caption and "." in caption:
@@ -95,7 +95,7 @@ AD_TEXT_CANDIDATES = 10
 def _ad_text(snap: dict) -> tuple[str, str]:
     """The ad's copy as `title | body | link description` (AD_TEXT_MAX chars) and its normalised body,
     the dedupe key: one body under several headlines is one text. A catalog ad's `{{product.name}}`
-    placeholder part carries nothing, so it is dropped (18 % of 00's texts on 26 Sep 2026)."""
+    placeholder part carries nothing, so it is dropped (18 % of the sourcing workflow's texts on 26 Sep 2026)."""
     body = snap.get("body")
     text = body.get("text") if isinstance(body, dict) else body
     parts = [" ".join(str(x or "").split()) for x in (snap.get("title"), text, snap.get("link_description"))]
@@ -107,7 +107,7 @@ def _ad_text(snap: dict) -> tuple[str, str]:
 def brand_lines(items: list[dict], texts_per_brand: int = 3) -> list[dict]:
     """The ads of one search grouped by advertiser page and landing domain: one line per group
     with the page identity, the ad count and up to `texts_per_brand` distinct ad texts. This is
-    the grouping workflow 00's Extract Brands did over every ad; done here, a 900-ad search
+    the grouping the sourcing workflow's brand extraction did over every ad; done here, a 900-ad search
     becomes a few dozen lines and n8n never holds the ads (26 Sep 2026). A `no_domain`
     group (domain "") keeps the count of ads that carried no landing domain."""
     groups: dict[tuple[str, str], dict] = {}

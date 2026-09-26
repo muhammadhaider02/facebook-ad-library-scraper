@@ -1,6 +1,6 @@
-"""Shape one Ad Library ad the way Stage 0's `Extract Dedupe And Filter` node already reads Apify items.
+"""Shape one Ad Library ad the way the sourcing workflow's extraction node already reads Apify items.
 
-That node reads, in order of preference (facebook.md §2.2):
+That node reads, in order of preference:
   page_name (fallback snapshot.page_name)
   page_id (fallback snapshot.page_id, _details.advertiser.page.page_id)
   page_profile_uri / page_url (fallbacks _details…, snapshot.page_profile_uri)

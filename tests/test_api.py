@@ -6,8 +6,8 @@ from facebook_ad_library import api, lanes
 from facebook_ad_library.config import settings
 from facebook_ad_library.scraper import RateLimited, ResultsMissing, ScrapeBlocked, ScrapeFailed, SearchResult, classify_page
 
-# Verbatim from the live Stage 0 node `Apify: Facebook Ad Library` (facebook.md §2.1).
-STAGE0_BODY = {
+# The body the sourcing workflow's Apify node sends, verbatim.
+SOURCING_BODY = {
     "maxItems": 80,
     "query": "acupressure mat for back pain",
     "country": "NZ",
@@ -32,7 +32,7 @@ def client():
         yield c
 
 
-def test_post_accepts_the_stage0_body_verbatim_and_returns_apify_shaped_items(client, monkeypatch):
+def test_post_accepts_the_sourcing_body_verbatim_and_returns_apify_shaped_items(client, monkeypatch):
     seen = {}
 
     def fake_search(query, country, max_items, active_status, *, pool, **kw):
@@ -40,7 +40,7 @@ def test_post_accepts_the_stage0_body_verbatim_and_returns_apify_shaped_items(cl
         return result()
 
     monkeypatch.setattr(lanes, "search", fake_search)
-    r = client.post("/facebook?maxTotalChargeUsd=1", json=STAGE0_BODY)
+    r = client.post("/facebook?maxTotalChargeUsd=1", json=SOURCING_BODY)
     assert r.status_code == 200, r.text
     # the whole page is fetched and cached; maxItems is applied on the way out
     assert seen == {"query": "acupressure mat for back pain", "country": "NZ", "max_items": 300, "active_status": "active"}
@@ -61,7 +61,7 @@ def test_post_accepts_plain_names_and_lists(client, monkeypatch):
 
 def test_max_items_slices_the_result(client, monkeypatch):
     monkeypatch.setattr(lanes, "search", lambda *a, **k: result())
-    r = client.post("/facebook", json={**STAGE0_BODY, "maxItems": 2})
+    r = client.post("/facebook", json={**SOURCING_BODY, "maxItems": 2})
     assert r.status_code == 200 and len(r.json()) == 2
 
 
@@ -85,7 +85,7 @@ def test_vendor_failures_are_503_with_the_error_envelope(client, monkeypatch, ex
         raise exc
 
     monkeypatch.setattr(lanes, "search", boom)
-    r = client.post("/facebook", json=STAGE0_BODY)
+    r = client.post("/facebook", json=SOURCING_BODY)
     assert r.status_code == 503
     body = r.json()["error"]
     assert body["type"] == type(exc).__name__ and body["status"] == 503 and body["message"] == str(exc) and body["description"] == str(exc)
@@ -97,7 +97,7 @@ def test_unexpected_failure_is_500(client, monkeypatch):
         raise KeyError("ad_library_main")
 
     monkeypatch.setattr(lanes, "search", boom)
-    r = client.post("/facebook", json=STAGE0_BODY)
+    r = client.post("/facebook", json=SOURCING_BODY)
     assert r.status_code == 500 and r.json()["error"]["type"] == "KeyError" and api.counters["failed"] == 1
 
 
@@ -105,12 +105,12 @@ def test_bearer_token_enforced(monkeypatch):
     set_frozen(settings, "api_token", "s3cret")
     try:
         with TestClient(api.app) as c:
-            r = c.post("/facebook", json=STAGE0_BODY)
+            r = c.post("/facebook", json=SOURCING_BODY)
             assert r.status_code == 401 and r.json()["error"]["status"] == 401
-            r = c.post("/facebook", json=STAGE0_BODY, headers={"Authorization": "Bearer wrong"})
+            r = c.post("/facebook", json=SOURCING_BODY, headers={"Authorization": "Bearer wrong"})
             assert r.status_code == 401
             monkeypatch.setattr(lanes, "search", lambda *a, **k: result(ads=[]))
-            r = c.post("/facebook", json=STAGE0_BODY, headers={"Authorization": "Bearer s3cret"})
+            r = c.post("/facebook", json=SOURCING_BODY, headers={"Authorization": "Bearer s3cret"})
             assert r.status_code == 200
             assert c.get("/health").status_code == 200  # health stays open
     finally:
@@ -120,24 +120,24 @@ def test_bearer_token_enforced(monkeypatch):
 def test_identical_request_is_served_from_the_cache_whatever_the_size(client, monkeypatch):
     calls = []
     monkeypatch.setattr(lanes, "search", lambda *a, **k: calls.append(1) or result())
-    first = client.post("/facebook", json=STAGE0_BODY)
-    second = client.post("/facebook", json={**STAGE0_BODY, "query": "  Acupressure Mat For Back Pain"})
+    first = client.post("/facebook", json=SOURCING_BODY)
+    second = client.post("/facebook", json={**SOURCING_BODY, "query": "  Acupressure Mat For Back Pain"})
     assert first.json() == second.json() and len(calls) == 1
     assert second.headers["X-Cache"] == "hit" and api.counters["cache_hits"] == 1 and api.counters["ok"] == 2
     # a different size is the same page, sliced
-    r = client.post("/facebook", json={**STAGE0_BODY, "maxItems": 3})
+    r = client.post("/facebook", json={**SOURCING_BODY, "maxItems": 3})
     assert len(calls) == 1 and len(r.json()) == 3 and r.headers["X-Cache"] == "hit"
     # a different status is a different search
-    client.post("/facebook", json={**STAGE0_BODY, "activeStatus": "all"})
+    client.post("/facebook", json={**SOURCING_BODY, "activeStatus": "all"})
     assert len(calls) == 2
 
 
 def test_retried_searches_are_flagged_and_still_cached(client, monkeypatch):
     calls = []
     monkeypatch.setattr(lanes, "search", lambda *a, **k: calls.append(1) or result(attempts=2, misses=1, session_swaps=1))
-    r = client.post("/facebook", json=STAGE0_BODY)
+    r = client.post("/facebook", json=SOURCING_BODY)
     assert r.status_code == 200 and r.headers["X-Misses"] == "1" and r.headers["X-Session-Swaps"] == "1" and api.counters["retried"] == 1
-    client.post("/facebook", json=STAGE0_BODY)
+    client.post("/facebook", json=SOURCING_BODY)
     assert len(calls) == 1 and api.counters["cache_hits"] == 1
 
 
@@ -247,7 +247,7 @@ def test_a_direct_page_with_ads_puts_the_direct_path_back(monkeypatch, client):
 def test_the_recovery_pages_to_the_cap_not_to_max_items(monkeypatch, client):
     """`max_items` sizes the response; it must not also stop the paging. Conflating them capped
     every recovery at the caller's item count - 80 ads, reached on page 9 - so the page cap never
-    applied. Measured in cycle 3931: every broad keyword stopped at 9 pages on the 80-ad target."""
+    applied. Measured in one production sourcing cycle: every broad keyword stopped at 9 pages on the 80-ad target."""
     from facebook_ad_library import api as m
     from facebook_ad_library.scraper import SearchResult
 

@@ -30,9 +30,10 @@ class Settings:
     # Shared secret n8n sends as `Authorization: Bearer <token>`. Empty = no auth (local testing only).
     api_token: str = os.environ.get("API_TOKEN", "").strip()
     # --- Lanes (0.4.0, 25 Sep 2026): every request to Facebook leaves through a lane, and every
-    # lane is one sticky residential exit with its own cookie jars, pacing and limiter. The VPS's
-    # own address is never used: the same service answers 01's 50+ checks and 02's research ads,
-    # so a block on that address would stop the whole pipeline, not just sourcing. See lanes.py.
+    # lane is one sticky residential exit with its own cookie jars, pacing and limiter. The host's
+    # own address is never used: the same service answers the qualification checks and the
+    # research lookups, so a block on that address would stop the whole pipeline, not just
+    # sourcing. See lanes.py.
     lane_count: int = _env_int("LANE_COUNT", 1)
     # `http://user__cr.us:pass@gw.dataimpulse.com:{port}`; `{port}` is filled from LANE_PROXY_PORTS.
     lane_proxy_template: str = os.environ.get("LANE_PROXY_TEMPLATE", "").strip()
@@ -99,7 +100,7 @@ class Settings:
     rate_limit_sleep_s: float = _env_float("RATE_LIMIT_SLEEP_S", 60)
     # Consecutive pages without results after which a session is retired as suspect.
     miss_streak_retire: int = _env_int("MISS_STREAK_RETIRE", 5)
-    # Wall-clock budget for one search. Must stay under Stage 0's 300 s node timeout; see .env.example
+    # Wall-clock budget for one search. Must stay under the caller's 300 s node timeout; see .env.example
     # for the arithmetic. Nothing cancels a request once it starts, so this is what bounds it.
     scrape_budget_s: float = _env_float("SCRAPE_BUDGET_S", 240)
     # Brand lookups (POST /adyntel), called from n8n Code nodes with 30 s and 45 s ceilings: the
@@ -108,7 +109,7 @@ class Settings:
     # Extra page-view GETs allowed when the page arrives without its results blob.
     brand_ssr_retries: int = _env_int("BRAND_SSR_RETRIES", 2)
     # Resolve a vanity URL the page plugin does not know by fetching the profile page too. Off until
-    # the deploy check has shown that page class is served to the VPS address; see .env.example.
+    # the deploy check has shown that page class is served to the host's address; see .env.example.
     brand_profile_fallback: bool = _env_bool("BRAND_PROFILE_FALLBACK", False)
     # --- GraphQL deep paging (POST /facebook with `max_pages`), restored 24 Sep 2026 ---
     # The persisted-query id for AdLibrarySearchPaginationQuery. Discovered from the page bundles
@@ -122,7 +123,7 @@ class Settings:
     page_novelty_stop: int = _env_int("PAGE_NOVELTY_STOP", 25)
     page_empty_tol: int = _env_int("PAGE_EMPTY_TOL", 8)
     # Wall-clock ceiling for ONE paged call, so it answers inside the caller's node timeout instead
-    # of being cut off by it. 150 pages measured 783 s, which Stage 0's 300 s node would never see.
+    # of being cut off by it. 150 pages measured 783 s, which a 300 s node timeout would never see.
     # A run that stops here says `truncated` and hands back a cursor; the caller pages again with
     # it. 0 removes the ceiling, which is only ever right for a probe nothing is waiting on.
     page_budget_s: float = _env_float("PAGE_BUDGET_S", 240)
@@ -134,13 +135,13 @@ class Settings:
     fetch_concurrency: int = _env_int("FETCH_CONCURRENCY", 8)
     fetch_timeout_s: float = _env_float("FETCH_TIMEOUT_S", 15)
     fetch_max_bytes: int = _env_int("FETCH_MAX_BYTES", 300_000)
-    # A job of homepage fetches (00's DTC check, 26 Sep 2026): at most this many items, and after
+    # A job of homepage fetches (the sourcing workflow's DTC check): at most this many items, and after
     # `deadline_s` (the job's, else this) every unfinished item answers `timeout` and the job ends.
     fetch_job_max_items: int = _env_int("FETCH_JOB_MAX_ITEMS", 600)
     fetch_job_deadline_s: float = _env_float("FETCH_JOB_DEADLINE_S", 150)
     # Pages the proxied fallback may take when this address is being throttled. Small on purpose:
-    # the fallback exists to answer the search Stage 0 asked for, not to page deeply. 8 pages is
-    # ~80 ads, above Stage 0's 80-item ask, for roughly 20 KB of billed wire.
+    # the fallback exists to answer the search the caller asked for, not to page deeply. 8 pages is
+    # ~80 ads, above the sourcing workflow's 80-item ask, for roughly 20 KB of billed wire.
     fallback_max_pages: int = _env_int("FALLBACK_MAX_PAGES", 8)
     # How long one withheld page suppresses the direct GET on later searches. While Meta is
     # throttling, that GET costs ~3 s and ~1 MB to be told what the previous search already
@@ -161,8 +162,8 @@ class Settings:
     cache_empty_ttl_s: float = _env_float("CACHE_EMPTY_TTL_S", 3600)
     cache_max_entries: int = _env_int("CACHE_MAX_ENTRIES", 500)
     host: str = os.environ.get("HOST", "0.0.0.0")
-    # 8000 is trustpilot-reviews, 8001 is reddit-reviews, on the same Docker network.
-    port: int = _env_int("PORT", 8002)
+    # 8000 and 8001 are the sibling services trustpilot-reviews and reddit-reviews.
+    port: int = _env_int("PORT", 8003)
 
 
 settings = Settings()

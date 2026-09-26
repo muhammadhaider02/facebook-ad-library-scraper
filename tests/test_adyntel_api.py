@@ -10,11 +10,11 @@ from facebook_ad_library.cache import TTLCache
 from facebook_ad_library.config import settings
 from facebook_ad_library.scraper import BudgetExceeded, Busy, ResultsMissing, ScrapeBlocked, ScrapeFailed, classify_page_view
 
-# Verbatim from the live nodes (adyntel.md §3, §4), key and email redacted.
-ADY01_BODY = {"api_key": "<redacted>", "email": "subscriptions@ecombench.com", "company_domain": "gymshark.com"}
-ADY02_CREATIVE = {"api_key": "<redacted>", "email": "subscriptions@ecombench.com", "company_domain": "gymshark.com", "active_status": "all"}
-ADY02_VIDEO = {"api_key": "<redacted>", "email": "subscriptions@ecombench.com", "company_domain": "gymshark.com", "media_type": "video"}
-ADY_FB_URL = {"api_key": "<redacted>", "email": "subscriptions@ecombench.com", "facebook_url": "https://www.facebook.com/Gymshark", "active_status": "all"}
+# The bodies the Adyntel call sites send, with placeholder credentials.
+ADY01_BODY = {"api_key": "<redacted>", "email": "you@example.com", "company_domain": "gymshark.com"}
+ADY02_CREATIVE = {"api_key": "<redacted>", "email": "you@example.com", "company_domain": "gymshark.com", "active_status": "all"}
+ADY02_VIDEO = {"api_key": "<redacted>", "email": "you@example.com", "company_domain": "gymshark.com", "media_type": "video"}
+ADY_FB_URL = {"api_key": "<redacted>", "email": "you@example.com", "facebook_url": "https://www.facebook.com/Gymshark", "active_status": "all"}
 
 
 @pytest.fixture

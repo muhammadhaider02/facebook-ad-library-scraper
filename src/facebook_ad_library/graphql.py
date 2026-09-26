@@ -1,7 +1,7 @@
 """Deep paging over the Ad Library's own GraphQL endpoint, through a residential exit.
 
 WHY THIS CAME BACK. GraphQL paging was dropped in `6984ab0` because Meta refuses
-`/api/graphql/` from the VPS address - measured, and still true. It is restored here for one
+`/api/graphql/` from the server's address - measured, and still true. It is restored here for one
 reason: measured 24 Sep 2026, it is about FIVE TIMES cheaper per ad than reading the rendered
 page, and the pipeline now pays per gigabyte for a residential exit.
 
@@ -11,7 +11,7 @@ page, and the pipeline now pays per gigabyte for a residential exit.
 TWO RULES THIS MODULE EXISTS TO ENFORCE.
 
 1. ONLY WHAT IS BLOCKED GOES THROUGH THE PROXY. Ad *counts* still come back correct from the
-   VPS address; it is the ad *payload* Meta withholds. So `/adyntel`'s count-only lookups keep
+   server's address; it is the ad *payload* Meta withholds. So `/adyntel`'s count-only lookups keep
    using the ordinary unproxied pool, and only this module - which needs the ads themselves -
    pays for the residential exit. The session here is proxied end to end, because the mint, the
    cookies and the GraphQL POSTs must all come from the same address.
@@ -658,7 +658,7 @@ def page_search(
 
     Two things let a caller with a deadline use this at all. `budget_s` stops the run before it
     starts a page it cannot finish, and the answer says so rather than being cut off by whatever
-    is waiting on it: measured 24 Sep 2026, 150 pages of `skin care` took 783 s against Stage 0's
+    is waiting on it: measured 24 Sep 2026, 150 pages of `skin care` took 783 s against the caller's
     300 s node timeout. `cursor` and `collation` then resume exactly where that answer stopped,
     so the depth is reached across several calls instead of one long one. The collation token
     must be carried back: Meta collates duplicates against it, and a fresh one would re-collate

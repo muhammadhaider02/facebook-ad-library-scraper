@@ -2,11 +2,11 @@
 
 Until 0.4.0 the service talked to Facebook from the host's own address, three sessions sharing
 one 20-a-minute limiter, and reached for a single residential exit only when Meta withheld the ad
-payload. That shape capped Stage 0 at one keyword at a time and, on 24 Sep 2026, answered 722 of
-1,320 searches with an empty list before anyone noticed. Umer's decision (stage0.md, 25 Sep 2026):
-every Facebook request leaves through a proxy from lane 1 on, up to 8 lanes in parallel, because
-the same service answers 01's 50+ checks and 02's research ads - a block on the host's address
-would stop the whole pipeline, not just sourcing.
+payload. That shape capped sourcing at one keyword at a time and, on 24 Sep 2026, answered 722 of
+1,320 searches with an empty list before anyone noticed. So since 0.4.0 every Facebook request
+leaves through a proxy from lane 1 on, up to 8 lanes in parallel, because the same service answers
+the qualification checks and the research lookups - a block on the host's address would stop the
+whole pipeline, not just sourcing.
 
 A LANE is one exit IP and everything that was process-global before, per exit:
   - a pool of ONE rendered-page session (cookie jar A) and one GraphQL session (jar B), both on
@@ -19,7 +19,7 @@ A LANE is one exit IP and everything that was process-global before, per exit:
     rotation under a live jar is caught (the jar is retired, the port kept) and so every log line
     and /health row names the address that made the call
 
-The DISPATCHER is one worker thread per lane pulling from one shared queue: lookups from 01/02
+The DISPATCHER is one worker thread per lane pulling from one shared queue: brand lookups
 first (25 s budgets), single searches next, batch job items last. An item refused by a lane
 (blocked, rate limited, withheld with nothing to recover) is retried on a DIFFERENT lane, never the
 same one twice, at most LANE_MAX_TRIES times, and then reported `blocked` - never `no_ads`.
@@ -87,7 +87,7 @@ class Item:
 
     kind: str  # search | count
     id: str
-    priority: int  # 0 lookups from 01/02, 1 single searches, 2 batch job items
+    priority: int  # 0 brand lookups, 1 single searches, 2 batch job items
     deadline: float
     query: str = ""
     country: str = "US"
@@ -488,7 +488,7 @@ class Lane:
         # them while it calls back into this lane (a mint counts its bytes through `_count`, which
         # takes `self.lock`). Read them BEFORE taking the lane lock, never inside it: taking the
         # lane lock first and then waiting on a slot lock deadlocked /health against a lane
-        # minting a session (25 Sep 2026, exec 4356), and with the event loop stuck every poll
+        # minting a session (25 Sep 2026), and with the event loop stuck every poll
         # hung and the whole service stopped.
         sess = self.pool.snapshot()
         gql = self.gql.snapshot()

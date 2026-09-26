@@ -1,9 +1,10 @@
 """HTTP surface n8n calls in place of two vendors, and since 0.4.0 the batch jobs.
 
 POST /facebook  -> JSON array of ad items, in place of Apify's run-sync-get-dataset-items (the
-                   names Stage 0's Extract Dedupe And Filter node reads)
+                   names the sourcing workflow's extraction node reads)
 POST /adyntel   -> one brand's ads and total ad count, in place of the Adyntel API's /facebook
-                   (the envelope the seven call sites in workflows 01 and 02 read)
+                   (the envelope the seven call sites in the qualification and research
+                   workflows read)
 POST /jobs      -> a whole sourcing run at once (searches and counts); GET /jobs/{id} long-polls
                    for the results paired back by id; DELETE /jobs/{id} cancels what is queued
 GET  /health    -> counters, the lanes and their exits, the jobs; unauthenticated
@@ -15,7 +16,7 @@ answers `200 {}` when there is no page for the input, and an envelope with `numb
 a page that exists and runs no ads, because the workflows route on that difference.
 
 Every request to Facebook runs on a lane (lanes.py): single calls jump the queue ahead of batch
-items, lookups from 01/02 first. Nothing leaves on this host's own address.
+items, brand lookups first. Nothing leaves on this host's own address.
 
 Error contract, matched to the siblings:
   400 {"error": {...}}  invalid request (no query, bad country, no page id / url / domain)
@@ -121,7 +122,7 @@ app = FastAPI(title="facebook-ad-library", version=__version__, lifespan=lifespa
 
 
 class SearchRequest(BaseModel):
-    """Stage 0's Apify body verbatim, plus plain names. Unknown fields (`category`, `mediaType`,
+    """The sourcing workflow's Apify body verbatim, plus plain names. Unknown fields (`category`, `mediaType`,
     `advertisers`, `fetchDetails`) are ignored: the actor took them, this service has one mode."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -130,8 +131,8 @@ class SearchRequest(BaseModel):
     country: str = Field(default="US", validation_alias=AliasChoices("country", "countries"))
     max_items: int = Field(default=80, validation_alias=AliasChoices("maxItems", "max_items", "max"))
     active_status: str = Field(default="active", validation_alias=AliasChoices("activeStatus", "active_status"))
-    # Deep paging. `max_pages` 1 (the default) keeps the rendered-page behaviour Stage 0 has always
-    # had; anything higher pages the search over GraphQL on the lane. See graphql.py for the
+    # Deep paging. `max_pages` 1 (the default) keeps the rendered-page behaviour the sourcing
+    # workflow has always had; anything higher pages the search over GraphQL on the lane. See graphql.py for the
     # measurements behind each stop.
     max_pages: int = Field(default=1, validation_alias=AliasChoices("max_pages", "maxPages"))
     novelty_stop: int = Field(default=25, validation_alias=AliasChoices("novelty_stop", "noveltyStop"))
@@ -202,7 +203,7 @@ class BrandRequest(BaseModel):
 
 
 class JobItemRequest(BaseModel):
-    """One item of a batch: a search (Stage 0's body, plus `id`) or a count (the Adyntel body, plus `id`)."""
+    """One item of a batch: a search (the Apify-shaped body, plus `id`) or a count (the Adyntel body, plus `id`)."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 

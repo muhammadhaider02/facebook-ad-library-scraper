@@ -1,6 +1,6 @@
 """One fake browser session against the Ad Library, and the pool that hands them out.
 
-Modelled on reddit-reviews' mobile.py (Device / _DevicePool). The unit of identity is a session,
+Modelled on a mobile-device pool (Device / _DevicePool). The unit of identity is a session,
 not a request: one curl_cffi cookie jar (`datr`, `rd_challenge`), created empty and filled by
 the first GET, which is the one Meta challenges. A session is used for many searches and retired
 at a request count, an age, the first hard failure, or a run of pages without results; a
@@ -26,7 +26,7 @@ from typing import Callable, Iterator, Protocol
 
 from . import scraper as wire
 from .config import settings
-from .proxy import fallback_proxy_url, proxy_url
+from .proxy import proxy_url
 
 log = logging.getLogger(__name__)
 
@@ -119,12 +119,6 @@ def lane_transport(proxy: str | None) -> Transport:
 def default_transport() -> Transport:
     """The legacy direct transport (SCRAPER_PROXY or none). CLI probes and tests only."""
     return CurlTransport(proxy=proxy_url())
-
-
-def fallback_transport() -> Transport:
-    """A transport on the retired RECOVERY proxy, for the pages Meta serves this address without their
-    ads. Same rendered page, same parser - only the address it is fetched from differs."""
-    return CurlTransport(proxy=fallback_proxy_url())
 
 
 # --------------------------------------------------------------------------- pacing

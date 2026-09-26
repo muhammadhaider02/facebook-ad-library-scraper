@@ -1,7 +1,7 @@
 """Shape a brand lookup the way the Adyntel API answered `POST /facebook`, so the seven n8n call
-sites in `01 · Find The Founder` and `02 · Learn About The Brand` keep their parsing untouched.
+sites in the qualification and research workflows keep their parsing untouched.
 
-What those nodes read (adyntel.md §2.1, verified against the node code on 22 Sep 2026):
+What those nodes read (the calling workflows' node code, 22 Sep 2026):
   number_of_ads            present = found; absent (`{}`) = not found; the 50+ gate reads it
   is_result_complete       true here always: the count is the page's total, so nothing pages
   continuation_token       null

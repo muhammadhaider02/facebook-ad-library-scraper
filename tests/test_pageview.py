@@ -100,7 +100,7 @@ def test_a_wall_is_a_dead_session_not_an_unknown_page():
 def test_page_view_with_ads_carries_the_total_and_the_page_record():
     kind, view = classify_page_view(fixture("page_view_ads.html"))
     assert kind is Page.ADS and view.count == 1783 and len(view.ads) == 4
-    assert view.known and view.info["page_name"] == "Muscle Mat" and view.info["page_is_deleted"] is False
+    assert view.known and view.info["page_name"] == "Example Mat" and view.info["page_is_deleted"] is False
     formats = {a["snapshot"]["display_format"] for a in view.ads}
     assert formats == {"IMAGE", "DCO", "VIDEO"}
 
@@ -116,7 +116,7 @@ def test_unknown_page_id_is_told_apart_from_a_page_with_no_ads():
     kind, unknown = classify_page_view(fixture("page_view_unknown.html"))
     assert kind is Page.EMPTY and unknown.count == 0 and unknown.ads == [] and not unknown.known
     kind, zero = classify_page_view(fixture("page_view_zero.html"))
-    assert kind is Page.EMPTY and zero.count == 0 and zero.ads == [] and zero.known and zero.info["page_name"] == "Muscle Mat"
+    assert kind is Page.EMPTY and zero.count == 0 and zero.ads == [] and zero.known and zero.info["page_name"] == "Example Mat"
 
 
 def test_miss_and_keyword_pages():
@@ -133,8 +133,8 @@ def test_miss_and_keyword_pages():
     [
         ("shop.brand.com", "brand.com"),
         ("https://www.brand.co.uk/collections/x?utm=1", "brand.co.uk"),
-        ("MuscleMat.com.au/relaxmat", "musclemat.com.au"),
-        ("www.musclemat.co.nz", "musclemat.co.nz"),
+        ("ExampleMat.com.au/relaxmat", "examplemat.com.au"),
+        ("www.examplemat.co.nz", "examplemat.co.nz"),
         ("eu.gymshark.com", "gymshark.com"),
         ("gymsharkusa.myshopify.com", "myshopify.com"),
         ("https://user:pw@Brand.com:443/", "brand.com"),
@@ -157,7 +157,7 @@ def test_owned_by_reads_caption_link_and_cards_and_tolerates_a_null_caption():
     assert len(ads) == 31
     assert sum(owned_by(a, "gymshark.com") for a in ads) == 23  # Gymshark 22 + Gymshark Women 1
     null_caption = [a for a in ads if a["snapshot"]["caption"] is None]
-    assert len(null_caption) == 1 and owned_by(null_caption[0], "saltydagger.com") and not owned_by(null_caption[0], "gymshark.com")
+    assert len(null_caption) == 1 and owned_by(null_caption[0], "exampleoutfitters.com") and not owned_by(null_caption[0], "gymshark.com")
     assert not owned_by(ads[0], "")
 
 
@@ -165,8 +165,8 @@ def test_pick_page_takes_the_page_with_most_ads_landing_on_the_domain():
     ads = _mixed()
     assert pick_page(ads, "gymshark.com") == "129669023798560"
     assert pick_page(ads, "https://www.gymshark.com/") == "129669023798560"
-    assert pick_page(ads, "planetfitness.com") == "131305029855"
-    assert pick_page(ads, "saltydagger.com") == "104247048152679"
+    assert pick_page(ads, "examplegym.com") == "100000000000002"
+    assert pick_page(ads, "exampleoutfitters.com") == "100000000000003"
     assert pick_page(ads, "nothing-here.com") is None
     assert pick_page([], "gymshark.com") is None
 

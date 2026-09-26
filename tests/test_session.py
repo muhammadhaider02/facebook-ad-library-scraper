@@ -269,9 +269,9 @@ def test_curl_transport_builds_with_the_configured_impersonation(monkeypatch):
 def test_fetch_url_returns_the_html_and_classifies_it():
     fb = site([page("page_view_ads.html")])
     s = make_session(fb)
-    kind, ads, html = s.fetch_url(wire.page_view_url("105396194411046"))
+    kind, ads, html = s.fetch_url(wire.page_view_url("100000000000001"))
     assert kind is Page.ADS and len(ads) == 4 and "search_results_connection" in html
-    assert fb.page_gets[-1][1] == wire.page_view_url("105396194411046") and s.requests_made == 1 and counters["calls"] == 1
+    assert fb.page_gets[-1][1] == wire.page_view_url("100000000000001") and s.requests_made == 1 and counters["calls"] == 1
 
 
 def test_get_plain_fetches_a_non_ad_library_page_on_the_same_jar_and_pacing():

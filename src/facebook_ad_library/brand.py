@@ -167,7 +167,7 @@ class _Run:
         did not produce ads.
 
         Meta serves a throttled address the page, the page name and a correct total, and simply
-        omits the ads - no 403, no 429, nothing to catch. Measured on the VPS 24 Sep 2026: page
+        omits the ads - no 403, no 429, nothing to catch. Measured on the server 24 Sep 2026: page
         775991435791863 answered count=1039 ads=0 direct, and count=1039 ads=30 through a
         residential exit in the same minute. Only a page that showed that signature is refetched,
         so an honestly empty page never costs a billed GET."""

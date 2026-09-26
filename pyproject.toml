@@ -1,10 +1,11 @@
 [project]
 name = "facebook-ad-library"
 version = "0.4.3"
-description = "Self-hosted Meta Ad Library scraper: a drop-in HTTP replacement for the Apify actor used by the Stage 0 brand-sourcing workflow"
+description = "Self-hosted Meta Ad Library scraper: a drop-in HTTP replacement for the Apify actor used by brand-sourcing workflow"
 readme = "README.md"
+license = "MIT"
 authors = [
-    { name = "Haider", email = "haider@ecombench.com" }
+    { name = "Haider Akbar", email = "muhammadhaiderakbar@gmail.com" }
 ]
 requires-python = ">=3.11"
 dependencies = [

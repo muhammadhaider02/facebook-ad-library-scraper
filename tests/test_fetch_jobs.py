@@ -1,4 +1,4 @@
-"""Homepage summaries and fetch jobs (26 Sep 2026): 00's DTC check reads every qualified brand's
+"""Homepage summaries and fetch jobs (26 Sep 2026): the sourcing workflow's DTC check reads every qualified brand's
 homepage as one job with a deadline, and gets a few KB of facts per brand instead of raw HTML."""
 
 import json

@@ -53,7 +53,7 @@ def test_eviction_drops_the_soonest_expiring():
 
 
 def test_expired_entries_are_swept_on_a_later_put_without_being_read():
-    """00 never reads a key twice: dead entries must leave on their own (the 26 Sep 2026 OOM)."""
+    """The sourcing workflow never reads a key twice: dead entries must leave on their own (the 26 Sep 2026 OOM)."""
     clock = Clock()
     c = TTLCache(60, clock=clock)
     for i in range(50):

@@ -1,7 +1,7 @@
 """Homepage fetches through a lane's exit: `POST /fetch` and the `fetch` items of a job.
 
-Stage 0 verifies a sourced brand by reading its homepage, and 21 % of those reads fail from the
-VPS (measured 24-25 Sep 2026: 103 of 499, half of them 403s from bot walls that see a bare
+The sourcing workflow verifies a sourced brand by reading its homepage, and 21 % of those reads
+fail from the server (measured 24-25 Sep 2026: 103 of 499, half of them 403s from bot walls that see a bare
 Node.js request from a data-centre address). The lanes already hold residential exits and a
 Chrome TLS profile, so this fetches the page the way a browser on a home connection would and
 hands the text back. It is NOT a lane try: no Facebook cookie jar, no limiter, no throttle
@@ -10,8 +10,8 @@ memory, no cooldown - a homepage that refuses is the brand's problem, not the ex
 The call never raises. A failed fetch is an answer (`ok: false`, the status and the error), so a
 caller pairing pages to brands by position never loses a slot.
 
-`page_summary` turns the page into the few facts the DTC verdict needs (26 Sep 2026): 00 used to
-carry up to 300 KB of raw HTML per brand through n8n to show Claude its first 1,200 stripped
+`page_summary` turns the page into the few facts the DTC verdict needs (26 Sep 2026): the sourcing
+workflow used to carry up to 300 KB of raw HTML per brand through n8n to show Claude its first 1,200 stripped
 characters, mostly menu and cart text, while the meta description and the product data the shop
 publishes for search engines were thrown away. Plain parsing, no model: about 3 KB per brand.
 """

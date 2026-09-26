@@ -139,7 +139,7 @@ def test_the_run_reports_what_it_cost(stub):
 
 
 def test_graphql_refuses_to_run_without_a_proxy(monkeypatch):
-    """Meta refuses /api/graphql/ from the VPS address, so an unproxied attempt is a configuration
+    """Meta refuses /api/graphql/ from the server's address, so an unproxied attempt is a configuration
     error worth failing loudly on rather than a scrape that mysteriously returns nothing."""
     monkeypatch.setattr(g, "fallback_proxy_url", lambda: None)
     with pytest.raises(ScrapeBlocked, match="needs a proxy"):
@@ -311,7 +311,7 @@ def slow(monkeypatch):
 
 
 def test_the_budget_stops_before_a_page_it_cannot_pay_for(slow):
-    """783 s for 150 pages against Stage 0's 300 s node timeout is what this exists for."""
+    """783 s for 150 pages against the caller's 300 s node timeout is what this exists for."""
     s = slow([([ad(n, page=n)], "c") for n in range(1, 200)], seconds_per_page=10)
     r = g.page_search("kw", max_pages=150, novelty_stop=0, budget_s=100)
     # 10s a page plus the 20% margin means the 9th page is the last one that fits under 100s.

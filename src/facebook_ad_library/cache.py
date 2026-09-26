@@ -1,11 +1,11 @@
 """A small in-memory cache with a TTL.
 
-Stage 0 re-searches an exhausted keyword's remaining country slots and retries a pair on error,
+The sourcing workflow re-searches an exhausted keyword's remaining country slots and retries a pair on error,
 so the same (query, country) arrives more than once a day. Each hit saves a page GET of about
 1 MB. The whole page is stored and `maxItems` applied on the way out, because one GET answers
 every size up to the page's 30. Empty results get a shorter life because a keyword with no ads
 today may have some tomorrow. Brand lookups keep a second, shorter-lived instance (the three
-calls `02 · Learn About The Brand` makes per brand share one resolution and one page view).
+calls the research workflow makes per brand share one resolution and one page view).
 """
 
 from __future__ import annotations
@@ -66,8 +66,8 @@ class TTLCache:
         now = self._clock()
         with self._lock:
             self._items[key] = (now + float(ttl), copy.deepcopy(value))
-            # Expired entries used to leave only when their own key was read again, and 00 never reads a
-            # key twice: 2,000 searches and 2,000 counts of dead ads (over 1 GB) OOM-killed the sourcing
+            # Expired entries used to leave only when their own key was read again, and the sourcing
+            # workflow never reads a key twice: 2,000 searches and 2,000 counts of dead ads (over 1 GB) OOM-killed the sourcing
             # container on 26 Sep 2026. Sweep them on a put, at most every SWEEP_EVERY_S.
             if now - self._last_sweep >= SWEEP_EVERY_S:
                 self._last_sweep = now

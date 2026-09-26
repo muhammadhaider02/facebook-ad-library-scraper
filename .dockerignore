@@ -20,4 +20,4 @@ __pycache__/
 tests/
 diag-out/
 Dockerfile
-docker-compose.yml
+docker-compose*.yml

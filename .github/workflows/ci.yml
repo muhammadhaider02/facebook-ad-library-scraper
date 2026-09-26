@@ -35,31 +35,31 @@ jobs:
         run: |
           # One proxy-less lane: a GitHub runner has no residential exit. LANE_REQUIRE_PROXY=false
           # exists for exactly this job and nothing else; production refuses to start without one.
-          docker run -d --name scraper -p 8002:8002 -e API_TOKEN="$API_TOKEN" -e LANE_COUNT=1 -e LANE_REQUIRE_PROXY=false -e LANE_IP_CHECK_URL= facebook-ad-library:ci
+          docker run -d --name scraper -p 8003:8003 -e API_TOKEN="$API_TOKEN" -e LANE_COUNT=1 -e LANE_REQUIRE_PROXY=false -e LANE_IP_CHECK_URL= facebook-ad-library:ci
           for i in $(seq 1 30); do
-            curl -sf http://127.0.0.1:8002/health && break
+            curl -sf http://127.0.0.1:8003/health && break
             sleep 2
           done
-          curl -sf http://127.0.0.1:8002/health
+          curl -sf http://127.0.0.1:8003/health
 
       - name: Auth is enforced
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8002/facebook \
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8003/facebook \
             -H 'Content-Type: application/json' -d '{"query":"running shoes","country":"US"}')
           test "$code" = "401"
 
       - name: Missing query is a 400
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8002/facebook \
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8003/facebook \
             -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' -d '{"country":"NZ"}')
           test "$code" = "400"
 
-      # Stage 0's body, verbatim. A GitHub runner IP may be refused by Meta, so a 503 with one of
+      # The sourcing workflow's Apify-shaped body. A GitHub runner IP may be refused by Meta, so a 503 with one of
       # our own error types is an accepted outcome; anything else fails the job.
       - name: Live search through the container
         run: |
           curl -s --max-time 280 -o out.json -w 'status=%{http_code} secs=%{time_total}\n' \
-            -X POST http://127.0.0.1:8002/facebook \
+            -X POST http://127.0.0.1:8003/facebook \
             -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
             -d '{"maxItems":80,"query":"acupressure mat for back pain","country":"NZ","category":"all","mediaType":"all","activeStatus":"active","advertisers":[],"fetchDetails":true}' | tee status.txt
           python3 -c "
@@ -81,7 +81,7 @@ jobs:
       - name: Live brand lookup through the container
         run: |
           curl -s --max-time 40 -o brand.json -w 'status=%{http_code} secs=%{time_total}\n' \
-            -X POST http://127.0.0.1:8002/adyntel \
+            -X POST http://127.0.0.1:8003/adyntel \
             -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
             -d '{"api_key":"ignored","email":"ignored","page_id":"775991435791863"}' | tee brand_status.txt
           python3 -c "

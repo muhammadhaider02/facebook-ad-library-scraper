@@ -62,7 +62,7 @@ def test_submit_returns_202_and_a_job_id_and_the_poll_returns_results_in_order(c
     r = submit(client, [
         {"id": "kw1-US", "query": "grounding sheets", "country": "US", "maxItems": 30},
         {"id": "kw2-GB", "query": "empty one", "country": "gb"},
-        {"id": "b1", "kind": "count", "page_id": "105396194411046"},
+        {"id": "b1", "kind": "count", "page_id": "100000000000001"},
     ])
     assert r.status_code == 202, r.text
     body = r.json()
@@ -76,7 +76,7 @@ def test_submit_returns_202_and_a_job_id_and_the_poll_returns_results_in_order(c
     assert s1["status"] == "ok" and s1["ads_found"] == 5 and s1["query"] == "grounding sheets" and s1["country"] == "US" and s1["items"][0]["page_name"] == "Shakti Mat"
     assert s1["lane"] == "lane-1" and s1["tries"][0]["status"] == "ok"
     assert s2["status"] == "no_ads" and s2["ads_found"] == 0 and s2["country"] == "GB" and s2["reported_total"] == 0
-    assert c1["status"] == "ok" and c1["number_of_ads"] == 1783 and c1["page_name"] == "Muscle Mat" and c1["envelope"]["number_of_ads"] == 1783
+    assert c1["status"] == "ok" and c1["number_of_ads"] == 1783 and c1["page_name"] == "Example Mat" and c1["envelope"]["number_of_ads"] == 1783
     assert p["lanes"]["total"] == 1 and api.counters["jobs_submitted"] == 1 and api.counters["job_items"] == 3
 
 
@@ -193,7 +193,7 @@ def test_facebook_and_adyntel_bodies_are_unchanged_and_carry_lane_headers(client
     r = client.post("/facebook", json={"maxItems": 80, "query": "acupressure mat", "country": "NZ", "category": "all", "mediaType": "all", "activeStatus": "active", "advertisers": [], "fetchDetails": True})
     assert r.status_code == 200 and isinstance(r.json(), list) and r.json()[0]["snapshot"]["caption"] == "shaktimat.com"
     assert r.headers["X-Status"] == "ok" and r.headers["X-Lane"] == "lane-1" and r.headers["X-Tries"] == "1" and r.headers["X-Ads-Found"] == "5"
-    r = client.post("/adyntel", json={"api_key": "k", "email": "e", "page_id": "105396194411046"})
+    r = client.post("/adyntel", json={"api_key": "k", "email": "e", "page_id": "100000000000001"})
     assert r.status_code == 200 and r.json()["number_of_ads"] == 1783 and r.json()["is_result_complete"] is True
     assert r.headers["X-Status"] == "ok" and r.headers["X-Lane"] == "lane-1"
 

@@ -1,51 +1,56 @@
-# The SOURCING container: the lanes build that workflow 00 runs on since 25 Sep 2026.
+# The service: one container beside n8n on the same host, on n8n's Docker network.
 #
-# It started life as the "lanes" test container beside production and was renamed when 00 was
-# cut over to it. Production (docker-compose.yml) pins `container_name: facebook-ad-library` and
-# the image tag `latest` for 01/02; bringing that file up from a second checkout would REPLACE
-# it. This file is name-pinned differently everywhere, runs as its own Compose project, and never
-# retags `latest`:
+#   git clone https://github.com/muhammadhaider02/facebook-ad-library-scraper.git facebook-ad-library-sourcing
+#   cd facebook-ad-library-sourcing
+#   cp .env.example .env            # then fill it in (see docs/deployment.md)
+#   docker compose -f docker-compose.sourcing.yml up -d --build
 #
-#   git clone <repo> /opt/facebook-ad-library-sourcing && cd /opt/facebook-ad-library-sourcing
-#   cp .env.example .env.sourcing   # then fill it in (see docs/deployment.md, "The sourcing container")
-#   docker compose -p facebook-ad-library-sourcing -f docker-compose.sourcing.yml up -d --build
+# The project, container and image names are pinned, so the same command from the same checkout
+# always replaces this container and nothing else. n8n reaches the API by container name over the
+# shared network, http://facebook-ad-library-sourcing:8003; the alias `facebook-ad-library-lanes`
+# is the container's old name, kept for callers that still use it. There is no reverse proxy and
+# no public route: if the host already runs one on 80/443 for n8n's own UI (Traefik, say), do not
+# add a second one; it would fail to bind.
 #
-# n8n reaches it at http://facebook-ad-library-sourcing:8003 over the shared network; the alias
-# `facebook-ad-library-lanes` is kept so a workflow still holding the old name keeps working.
-# Production keeps answering on http://facebook-ad-library:8002. The two share nothing but the
-# network and the proxy account, and `.env.sourcing` must use ports disjoint from production's exit.
-#
-# Health from the host:
+# Health from the host (the image has no curl):
 #   docker exec facebook-ad-library-sourcing python -c "import urllib.request as u; \
 #     print(u.urlopen('http://127.0.0.1:8003/health').read().decode())"
+name: facebook-ad-library-sourcing
+
 services:
   scraper:
     build: .
     image: facebook-ad-library:sourcing
     container_name: facebook-ad-library-sourcing
     restart: unless-stopped
-    env_file: .env.sourcing
+    env_file: .env
 
-    # No `ports:` on purpose (see docker-compose.yml). Reachable only from the network below.
+    # No `ports:` on purpose. Publishing would expose the API on the host - and Docker publishes
+    # straight past UFW, so even 8003:8003 behind a firewall would be public. Reachable only from
+    # containers on the network below.
     networks:
       n8n:
         aliases:
           - facebook-ad-library-lanes
 
-    # Eight lanes hold up to eight pages in flight at once, and a deep job's answer (200 pairs x
-    # up to 150 ads) is serialised in one piece: 768m was OOM-killed on exactly that (25 Sep
-    # 2026). Poll with include_items=lite for the sourcing fields only; the headroom is for the
-    # full shape.
+    # A single Python process with curl_cffi; no browser is ever launched. Each lane holds one page
+    # of up to 1.7 MB while it is parsed, and a deep job's answer (200 pairs x up to 150 ads) is
+    # serialised in one piece: 768m was OOM-killed on exactly that. Poll with include_items=lite or
+    # brands for the sourcing fields only; the headroom is for the full shape.
     mem_limit: 3g
     memswap_limit: 3g
     mem_reservation: 128m
 
+    # init reaps anything uvicorn's worker leaves behind on a hard stop. pids_limit is a fork guard,
+    # not a working budget: eight lane workers, the fetch pool, asyncio's pool and uvicorn stay well
+    # under it. No shm_size: that is a browser concern and this image has none.
     init: true
-    # Threads count here: eight lane workers, asyncio's pool and uvicorn stay well under this.
     pids_limit: 128
 
-    # A job's items are bounded per try (LANE_SEARCH_BUDGET_S) and per item
-    # (JOB_ITEM_MAX_WAIT_S); a redeploy mid-job loses the job, which the caller sees as a 404.
+    # Docker's default is 10s, which SIGKILLs every in-flight search on redeploy. 250s is
+    # SCRAPE_BUDGET_S plus slack; raise it with SCRAPE_BUDGET_S, never below it. A job's items are
+    # bounded per try (LANE_SEARCH_BUDGET_S) and per item (JOB_ITEM_MAX_WAIT_S); a redeploy mid-job
+    # loses the job, which the caller sees as a 404.
     stop_grace_period: 250s
 
     logging:
@@ -54,6 +59,10 @@ services:
         max-size: "20m"
         max-file: "3"
 
+# n8n's Compose project creates this network as <project>_default. Declared external so this file
+# never creates or owns it - n8n's stack does. If the name is wrong the container refuses to start
+# with `network n8n_default declared as external, but could not be found`, which names the fix;
+# check with `docker network ls`.
 networks:
   n8n:
     external: true

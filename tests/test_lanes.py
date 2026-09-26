@@ -303,7 +303,7 @@ def test_a_withheld_count_lookup_is_not_refetched_on_the_same_ip():
 
 def test_a_count_with_ads_is_ok_and_an_unknown_page_is_not_found():
     lane = make_lane([FakeFacebook({wire.AD_LIBRARY: [CHALLENGE, page("page_view_ads.html")], wire.ORIGIN + "/__rd_verify": [Resp(200, "")]})])
-    t = L.run_count_try(lane, count_item("105396194411046"))
+    t = L.run_count_try(lane, count_item("100000000000001"))
     assert t.status == "ok" and t.count == 1783 and len(t.ads) == 4
     lane = make_lane([FakeFacebook({wire.AD_LIBRARY: [CHALLENGE, page("page_view_unknown.html")], wire.ORIGIN + "/__rd_verify": [Resp(200, "")]})])
     assert L.run_count_try(lane, count_item("1234")).status == "not_found"
@@ -552,7 +552,7 @@ def test_workers_run_items_in_threads_and_the_counters_stay_consistent(monkeypat
 
 
 def test_a_lane_snapshot_never_waits_on_a_mint_in_progress():
-    """/health deadlocked the service (25 Sep 2026, exec 4356): the snapshot took the lane lock and then
+    """/health deadlocked the service (25 Sep 2026): the snapshot took the lane lock and then
     waited on the GraphQL slot lock, while a worker minting a session held the slot lock and waited on
     the lane lock to count its bytes. A snapshot must finish while a mint holds the slot."""
     import threading

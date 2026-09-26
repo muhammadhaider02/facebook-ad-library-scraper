@@ -17,7 +17,7 @@ Three things a 200 page can be, all seen from every address:
   - miss:  the results blob is absent (~573 KB page): Meta skipped the prefetch; about 1 in 4
            requests, per request not per keyword; a retry usually carries it
 
-Verified 2026-09-19 against the live site, from a laptop and from the VPS:
+Verified 2026-09-19 against the live site, from a laptop and from the server:
   - the first GET answers `403 Client challenge` with a RELATIVE `/__rd_verify_...` POST URL; the
     `rd_challenge` cookie it sets lasts 24 h and the next GETs on that jar are not challenged
   - plain (non-Chrome-TLS) clients clear the challenge and then get a 400 error page on every request
@@ -109,7 +109,7 @@ class SessionDead(FacebookError):
 class ResultsMissing(FacebookError):
     """Every attempt came back as the page without the results blob. Meta skips the server-side
     prefetch now and then; if it does so for every retry inside the budget, that is this. It is
-    an error and not an empty list on purpose: Stage 0 reads an empty list as "no inventory" and
+    an error and not an empty list on purpose: the sourcing workflow reads an empty list as "no inventory" and
     retires keywords on it."""
 
 
@@ -147,7 +147,7 @@ class SearchResult:
     session_swaps: int = 0
     # What Meta says the search has, which is not always what it hands over. `count` far above
     # `len(ads)` is the throttle's signature: the page renders, the total is right, the ad payload
-    # is withheld, and there is no 403 or 429 to notice. Measured on the VPS 24 Sep 2026:
+    # is withheld, and there is no 403 or 429 to notice. Measured on the server 24 Sep 2026:
     # "running shoes" US came back with count 50001 and 0 ads, 590 KB of page, no error.
     count: int = 0
 
