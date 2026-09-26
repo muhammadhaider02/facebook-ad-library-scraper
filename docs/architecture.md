@@ -221,7 +221,7 @@ A brand lookup has a budget of its own, `BRAND_BUDGET_S` (25), because 01 and 02
 
 ## Cache
 
-`api.py` keeps the whole page's items for `CACHE_TTL_S` (86,400 s), keyed on the normalised query, the upper-cased country and `activeStatus`; `maxItems` is applied on the way out, so a request for 30 and one for 80 share one entry. Stage 0 re-searches an exhausted keyword's remaining country slots and retries a pair on error, so the same request arrives more than once a day; a hit costs nothing and is answered in a few milliseconds with `X-Cache: hit`. Empty results live `CACHE_EMPTY_TTL_S` (3,600 s). The cache is bounded at `CACHE_MAX_ENTRIES` (2,000) and lives in memory, so a restart clears it.
+`api.py` keeps the whole page's items for `CACHE_TTL_S` (86,400 s), keyed on the normalised query, the upper-cased country and `activeStatus`; `maxItems` is applied on the way out, so a request for 30 and one for 80 share one entry. Stage 0 re-searches an exhausted keyword's remaining country slots and retries a pair on error, so the same request arrives more than once a day; a hit costs nothing and is answered in a few milliseconds with `X-Cache: hit`. Empty results live `CACHE_EMPTY_TTL_S` (3,600 s). The cache is bounded at `CACHE_MAX_ENTRIES` (500) and swept of expired entries every 30 s and lives in memory, so a restart clears it.
 
 Brand lookups keep a second, shorter-lived cache: the page view under (page id, status, media) for `ADYNTEL_CACHE_TTL_S` (600 s), and a domain's or URL's resolved page id for `CACHE_TTL_S`. 02's three calls per brand then cost one resolution and three page views, and a page id Meta does not know is pinned for `CACHE_EMPTY_TTL_S`; a vanity or a domain that was not found is not pinned, in case the plugin or the keyword search had an off moment. Ten minutes is short on purpose: a second harness run measures the site, not the cache.
 
@@ -356,7 +356,7 @@ So the Brave slot was replaced with no search at all (deployment.md, "Cutting th
 | `LANE_SEARCH_BUDGET_S` / `LANE_COUNT_BUDGET_S` | `90` / `20` | per-try budgets; the request budgets still bound a single call end to end |
 | `GQL_SPACING_MIN_S` / `GQL_SPACING_MAX_S` | `1` / `2` | gap between two GraphQL pages on one lane session |
 | `JOB_MAX_ITEMS` / `JOB_STORE_MAX` / `JOB_QUEUE_MAX` | `200` / `50` / `1000` | bounds on one job, on live jobs, on queued items |
-| `JOB_ITEM_MAX_WAIT_S` / `JOB_TTL_S` / `JOB_POLL_MAX_WAIT_S` | `600` / `7200` / `50` | how long a job item may wait for a lane, how long a finished job stays readable, the longest one poll holds |
+| `JOB_ITEM_MAX_WAIT_S` / `JOB_TTL_S` / `JOB_POLL_MAX_WAIT_S` | `600` / `900` / `50` | how long a job item may wait for a lane, how long a finished job stays readable, the longest one poll holds |
 | `SCRAPER_PROXY`, `FALLBACK_PROXY` | *(retired)* | 0.3.1's direct path and single recovery exit; read only to warn at startup |
 | `FALLBACK_MAX_PAGES` | `8` | pages a recovered search may take. Raising it buys the worst pages there are; see [The throttle](#the-throttle) |
 | `THROTTLE_MEMORY_S` | `600` | how long one withheld page suppresses the direct GET. Expires rather than latching: while it is set every search pays the proxy |
@@ -384,6 +384,6 @@ So the Brave slot was replaced with no search at all (deployment.md, "Cutting th
 | `BRAND_PROFILE_FALLBACK` | `false` | also read the profile page when the plugin does not know a vanity handle |
 | `CACHE_TTL_S` / `CACHE_EMPTY_TTL_S` | `86400` / `3600` | cache life for results with ads and without, and for resolved page ids |
 | `ADYNTEL_CACHE_TTL_S` | `600` | cache life for a brand's page view |
-| `CACHE_MAX_ENTRIES` | `2000` | size of each cache |
+| `CACHE_MAX_ENTRIES` | `500` | size of each cache; expired entries are also swept on a put every 30 s (26 Sep 2026: before that they left only when their own key was read, and 00 never reads a key twice, so 2,000 dead searches and counts OOM-killed the sourcing container) |
 | `HOST` | `0.0.0.0` | bind address |
 | `PORT` | `8002` | bind port; `8000` and `8001` are the siblings |

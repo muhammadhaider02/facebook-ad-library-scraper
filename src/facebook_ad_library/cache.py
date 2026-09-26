@@ -15,6 +15,7 @@ import threading
 import time
 from typing import Any, Callable
 
+SWEEP_EVERY_S = 30.0
 
 class TTLCache:
     def __init__(
@@ -33,6 +34,8 @@ class TTLCache:
         self.hits = 0
         self.misses = 0
         self.evictions = 0
+        self.expired_dropped = 0
+        self._last_sweep = self._clock()
 
     @staticmethod
     def key(query: str, country: str, active_status: str = "active") -> tuple:
@@ -63,6 +66,14 @@ class TTLCache:
         now = self._clock()
         with self._lock:
             self._items[key] = (now + float(ttl), copy.deepcopy(value))
+            # Expired entries used to leave only when their own key was read again, and 00 never reads a
+            # key twice: 2,000 searches and 2,000 counts of dead ads (over 1 GB) OOM-killed the sourcing
+            # container on 26 Sep 2026. Sweep them on a put, at most every SWEEP_EVERY_S.
+            if now - self._last_sweep >= SWEEP_EVERY_S:
+                self._last_sweep = now
+                for k in [k for k, (exp, _) in self._items.items() if exp <= now]:
+                    del self._items[k]
+                    self.expired_dropped += 1
             if len(self._items) > self.max_entries:
                 # Drop expired entries first, then the ones expiring soonest.
                 expired = [k for k, (exp, _) in self._items.items() if exp <= now]
@@ -75,7 +86,7 @@ class TTLCache:
 
     def stats(self) -> dict:
         with self._lock:
-            return {"entries": len(self._items), "hits": self.hits, "misses": self.misses, "evictions": self.evictions}
+            return {"entries": len(self._items), "hits": self.hits, "misses": self.misses, "evictions": self.evictions, "expired_dropped": self.expired_dropped}
 
     def clear(self) -> None:
         with self._lock:

@@ -164,7 +164,7 @@ def test_health_reports_the_adyntel_counters_and_the_brand_cache(client):
     h = client.get("/health").json()
     for k in ("adyntel_requests", "adyntel_found", "adyntel_not_found", "adyntel_cache_hits", "adyntel_resolve_hits", "adyntel_by_page_id", "adyntel_by_url", "adyntel_by_domain", "busy", "budget_exceeded"):
         assert k in h
-    assert h["brand_cache"] == {"entries": 0, "hits": 0, "misses": 0, "evictions": 0}
+    assert h["brand_cache"] == {"entries": 0, "hits": 0, "misses": 0, "evictions": 0, "expired_dropped": 0}
     for k in ("plain_calls", "plain_blocked", "plain_dead", "busy"):
         assert k in h["sessions"]
 

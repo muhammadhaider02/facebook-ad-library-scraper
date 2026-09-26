@@ -180,7 +180,7 @@ The pass bar is `throttled_recovered == throttled_pages` and `brand_recovered ==
 | `/health` `sessions.plain_blocked` or `plain_dead` rising | the page plugin or the profile page is being refused to this address while the Ad Library page is not; set `BRAND_PROFILE_FALLBACK=false` if it is on, and send `page_id` from the stored table where the workflow can |
 | `/health` `budget_exceeded` or `busy` rising | lookups are queueing behind each other or behind the limiter; either the callers overlap more than `MAX_CONCURRENCY` allows or `RATE_LIMIT_PER_MIN` is too low for the burst. `X-Queue-Seconds` on the responses says which |
 | `/health` `sessions.sessions_minted` rising steadily | expected at the higher rate: `SESSION_MAX_REQUESTS` (200) retires a session after about 200 GETs; not a fault unless `retired_by_reason` shows `session_dead` or `miss_streak` |
-| `docker stats` memory climbing | the caches are the only things that grow; check `cache.entries` and `brand_cache.entries` against `CACHE_MAX_ENTRIES` |
+| `docker stats` memory climbing | the caches and finished jobs are what grow: check `cache.entries`, `brand_cache.entries` (`expired_dropped` should rise) and `jobs.store`; finished jobs live `JOB_TTL_S` (900 s). The sourcing container runs with `mem_limit: 3g` and `MALLOC_ARENA_MAX=2` since the 26 Sep 2026 OOM |
 
 ## The sourcing container (was "the lanes container")
 

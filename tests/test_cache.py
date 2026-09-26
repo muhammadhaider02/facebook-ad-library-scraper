@@ -19,7 +19,7 @@ def test_miss_put_hit_and_expiry():
     assert c.get(k) == [{"x": 1}]
     clock.advance(2)
     assert c.get(k) is None
-    assert c.stats() == {"entries": 0, "hits": 2, "misses": 2, "evictions": 0}
+    assert c.stats() == {"entries": 0, "hits": 2, "misses": 2, "evictions": 0, "expired_dropped": 0}
 
 
 def test_returned_lists_are_copies():
@@ -50,6 +50,18 @@ def test_eviction_drops_the_soonest_expiring():
     c.put(("c",), [3])
     assert c.get(("a",)) is None and c.get(("b",)) == [2] and c.get(("c",)) == [3]
     assert c.stats()["evictions"] == 1 and c.stats()["entries"] == 2
+
+
+def test_expired_entries_are_swept_on_a_later_put_without_being_read():
+    """00 never reads a key twice: dead entries must leave on their own (the 26 Sep 2026 OOM)."""
+    clock = Clock()
+    c = TTLCache(60, clock=clock)
+    for i in range(50):
+        c.put(("q", i), [i] * 30)
+    clock.advance(61)
+    c.put(("fresh",), [1])
+    assert c.stats()["entries"] == 1 and c.stats()["expired_dropped"] == 50
+    assert c.get(("fresh",)) == [1]
 
 
 def test_clear():

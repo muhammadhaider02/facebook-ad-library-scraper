@@ -70,7 +70,7 @@ class Settings:
     job_store_max: int = _env_int("JOB_STORE_MAX", 50)
     job_queue_max: int = _env_int("JOB_QUEUE_MAX", 1000)
     job_item_max_wait_s: float = _env_float("JOB_ITEM_MAX_WAIT_S", 600)
-    job_ttl_s: float = _env_float("JOB_TTL_S", 7200)
+    job_ttl_s: float = _env_float("JOB_TTL_S", 900)
     job_poll_max_wait_s: float = _env_float("JOB_POLL_MAX_WAIT_S", 50)
     # Retired in 0.4.0 and read only to warn at startup: lanes replaced the direct path and the
     # single recovery exit. `proxy_url()` still parses these forms for the CLI and the tests.
@@ -159,7 +159,7 @@ class Settings:
     adyntel_cache_ttl_s: float = _env_float("ADYNTEL_CACHE_TTL_S", 600)
     cache_ttl_s: float = _env_float("CACHE_TTL_S", 86400)
     cache_empty_ttl_s: float = _env_float("CACHE_EMPTY_TTL_S", 3600)
-    cache_max_entries: int = _env_int("CACHE_MAX_ENTRIES", 2000)
+    cache_max_entries: int = _env_int("CACHE_MAX_ENTRIES", 500)
     host: str = os.environ.get("HOST", "0.0.0.0")
     # 8000 is trustpilot-reviews, 8001 is reddit-reviews, on the same Docker network.
     port: int = _env_int("PORT", 8002)
